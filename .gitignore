@@ -1,0 +1,66 @@
+# Compiled python modules.
+*.pyc
+.DS_Store
+*/.DS_Store
+
+# Other Python
+__pycache__
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+.idea/
+.python-version
+junk.txt
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+.egg*
+
+# Poetry
+.venv/
+poetry.lock
+
+# Temporary files and caches (structure tracked via tmp/.gitkeep)
+tmp/*
+!tmp/.gitkeep
+
+# Pre-commit
+.pre-commit-cache/
+
+# Coverage
+.coverage
+htmlcov/
+
+# Testing
+reports/
+
+# Logs
+logs
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+
+
+# Virtual environments
+.venv/
+
+# Local/editor noise
+.DS_Store
+.idea/
+.vscode/
+
+
+
+# Temporarily ignored
+#docs/architecture/
+*.bkp
+*.dtmp

@@ -1,0 +1,48 @@
+[tool.poetry]
+name = "idunn"
+version = "0.0.1"
+description = "A tiny constructor-time dependency inversion toolkit for Python."
+authors = ["Steven Miers <steven@example.com>"]
+readme = "README.md"
+license = "MIT"
+packages = [{ include = "idunn" }]
+include = [
+    { path = "examples", format = "sdist" },
+]
+keywords = ["dependency-injection", "inversion-of-control", "ioc", "decorators", "protocols"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+[tool.poetry.dependencies]
+python = ">=3.11,<4.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=8.0,<10.0"
+ruff = ">=0.8,<1.0"
+mypy = ">=1.13,<3.0"
+freyja = "^2.0.2"
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+mypy_path = "idunn"
+files = ["idunn", "tests", "examples"]
+
+[tool.pytest.ini_options]
+cache_dir = "tmp/.pytest_cache"
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-config", "--strict-markers"]
