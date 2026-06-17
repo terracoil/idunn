@@ -2,7 +2,8 @@
 
 from typing import Protocol
 
-from idunn import Adapter, Idunn, Invert, LifecycleEnum, Port
+from idunn.app import Adapter, Idunn, Invert, Port
+from idunn.domain import LifecycleEnum
 
 
 @Port

@@ -5,10 +5,7 @@ description = "A tiny constructor-time dependency inversion toolkit for Python."
 authors = ["Steven Miers <steven@example.com>"]
 readme = "README.md"
 license = "MIT"
-packages = [{ include = "src", packa }]
-include = [
-    { path = "examples", format = "sdist" },
-]
+    packages = [{ include = "idunn"}]
 keywords = ["dependency-injection", "inversion-of-control", "ioc", "decorators", "protocols"]
 classifiers = [
     "Development Status :: 3 - Alpha",

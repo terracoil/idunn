@@ -5,16 +5,14 @@ from textwrap import dedent
 from typing import Protocol
 
 import pytest
-from idunn import (
-  Adapter,
+from idunn.app import Adapter, Idunn, Port
+from idunn.domain import (
   AdapterNotFoundError,
-  Idunn,
   InjectionCycleError,
   InvalidAdapterError,
   InvalidPortError,
   LifecycleEnum,
   MissingTypeHintError,
-  Port,
 )
 
 
@@ -323,7 +321,7 @@ def test_autodiscover_imports_decorated_adapters_under_adapters_package(
     files={
       'ports.py': """
                 from typing import Protocol
-                from idunn import Port
+                from idunn.app import Port
 
                 @Port
                 class AppleBasketPort(Protocol):
@@ -331,7 +329,7 @@ def test_autodiscover_imports_decorated_adapters_under_adapters_package(
             """,
       'adapters/__init__.py': '',
       'adapters/apple.py': """
-                from idunn import Adapter
+                from idunn.app import Adapter
                 from sample_app_one.ports import AppleBasketPort
 
                 @Adapter(AppleBasketPort, default=True)
@@ -368,7 +366,7 @@ def test_autodiscover_finds_nested_adapters_packages(
     files={
       'ports.py': """
                 from typing import Protocol
-                from idunn import Port
+                from idunn.app import Port
 
                 @Port
                 class PaymentPort(Protocol):
@@ -377,7 +375,7 @@ def test_autodiscover_finds_nested_adapters_packages(
       'billing/__init__.py': '',
       'billing/adapters/__init__.py': '',
       'billing/adapters/payment.py': """
-                from idunn import Adapter
+                from idunn.app import Adapter
                 from sample_app_two.ports import PaymentPort
 
                 @Adapter(PaymentPort)
@@ -410,7 +408,7 @@ def test_autodiscover_does_not_register_undecorated_classes(
     files={
       'ports.py': """
                 from typing import Protocol
-                from idunn import Port
+                from idunn.app import Port
 
                 @Port
                 class AppleBasketPort(Protocol):
@@ -449,7 +447,7 @@ def test_autodiscover_does_not_import_non_adapter_modules(
     files={
       'ports.py': """
                 from typing import Protocol
-                from idunn import Port
+                from idunn.app import Port
 
                 @Port
                 class AppleBasketPort(Protocol):
@@ -460,7 +458,7 @@ def test_autodiscover_does_not_import_non_adapter_modules(
             """,
       'adapters/__init__.py': '',
       'adapters/apple.py': """
-                from idunn import Adapter
+                from idunn.app import Adapter
                 from sample_app_four.ports import AppleBasketPort
 
                 @Adapter(AppleBasketPort)
@@ -489,7 +487,7 @@ def test_idunn_facade_can_autodiscover_and_resolve(
     files={
       'ports.py': """
                 from typing import Protocol
-                from idunn import Port
+                from idunn.app import Port
 
                 @Port
                 class AppleBasketPort(Protocol):
@@ -497,7 +495,7 @@ def test_idunn_facade_can_autodiscover_and_resolve(
             """,
       'adapters/__init__.py': '',
       'adapters/apple.py': """
-                from idunn import Adapter
+                from idunn.app import Adapter
                 from sample_app_five.ports import AppleBasketPort
 
                 @Adapter(AppleBasketPort)
@@ -529,7 +527,7 @@ def test_autodiscover_imports_and_registers_ports_without_adapters(
     files={
       'ports.py': """
                 from typing import Protocol
-                from idunn import Port
+                from idunn.app import Port
 
                 @Port
                 class AppleBasketPort(Protocol):
@@ -561,7 +559,7 @@ def test_autodiscover_registers_all_adapters_before_constructor_injection(
     files={
       'ports.py': """
                 from typing import Protocol
-                from idunn import Port
+                from idunn.app import Port
 
                 @Port
                 class AppleBasketPort(Protocol):
@@ -573,7 +571,7 @@ def test_autodiscover_registers_all_adapters_before_constructor_injection(
             """,
       'adapters/__init__.py': '',
       'adapters/feast.py': """
-                from idunn import Adapter
+                from idunn.app import Adapter
                 from sample_app_seven.ports import AppleBasketPort, FeastPort
 
                 constructed = 0
@@ -589,7 +587,7 @@ def test_autodiscover_registers_all_adapters_before_constructor_injection(
                         return f"feast with {self._basket.take_apple()}"
             """,
       'adapters/z_apple.py': """
-                from idunn import Adapter
+                from idunn.app import Adapter
                 from sample_app_seven.ports import AppleBasketPort
 
                 constructed = 0
@@ -639,7 +637,7 @@ def test_autodiscover_does_not_import_unrelated_packages_while_scanning(
     files={
       'ports.py': """
                 from typing import Protocol
-                from idunn import Port
+                from idunn.app import Port
 
                 @Port
                 class AppleBasketPort(Protocol):
@@ -653,7 +651,7 @@ def test_autodiscover_does_not_import_unrelated_packages_while_scanning(
             """,
       'adapters/__init__.py': '',
       'adapters/apple.py': """
-                from idunn import Adapter
+                from idunn.app import Adapter
                 from sample_app_eight.ports import AppleBasketPort
 
                 @Adapter(AppleBasketPort)

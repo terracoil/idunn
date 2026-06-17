@@ -1,36 +1,5 @@
 """Idunn: tiny constructor-time dependency inversion for Python."""
 
-from idunn.app import Adapter, Idunn, Invert, Port
-from idunn.domain import (
-  AdapterDeclaration,
-  AdapterMetadata,
-  AdapterNotFoundError,
-  DiscoveryError,
-  IdunnError,
-  InjectionCycleError,
-  InvalidAdapterError,
-  InvalidPortError,
-  LifecycleEnum,
-  MissingTypeHintError,
-  RegistrationKey,
-  ReportMap,
-)
+from .app.idunn import Idunn
 
-__all__ = [
-  'Adapter',
-  'AdapterDeclaration',
-  'AdapterMetadata',
-  'AdapterNotFoundError',
-  'DiscoveryError',
-  'Idunn',
-  'IdunnError',
-  'InjectionCycleError',
-  'Invert',
-  'InvalidAdapterError',
-  'InvalidPortError',
-  'LifecycleEnum',
-  'MissingTypeHintError',
-  'Port',
-  'RegistrationKey',
-  'ReportMap',
-]
+__all__ = ['Idunn']

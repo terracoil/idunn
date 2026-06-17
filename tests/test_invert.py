@@ -3,7 +3,8 @@
 from typing import Protocol
 
 import pytest
-from idunn import Adapter, AdapterNotFoundError, Idunn, Invert, LifecycleEnum, Port
+from idunn.app import Adapter, Idunn, Invert, Port
+from idunn.domain import AdapterNotFoundError, LifecycleEnum
 
 
 @Port
