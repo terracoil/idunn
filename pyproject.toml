@@ -5,7 +5,7 @@ description = "A tiny constructor-time dependency inversion toolkit for Python."
 authors = ["Steven Miers <steven@example.com>"]
 readme = "README.md"
 license = "MIT"
-packages = [{ include = "idunn" }]
+packages = [{ include = "src", packa }]
 include = [
     { path = "examples", format = "sdist" },
 ]
