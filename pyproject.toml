@@ -19,6 +19,12 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 
+[project.urls]
+Homepage = "https://github.com/terracoil/idunn/blob/master/README.md"
+Repository = "https://github.com/terracoil/idunn"
+Documentation = "https://github.com/terracoil/idunn/blob/main/docs/README.md"
+
+
 [tool.poetry.dependencies]
 python = ">=3.11,<4.0"
 pytest-cov = "^7.1.0"
