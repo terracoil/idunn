@@ -1,5 +1,7 @@
 # About Idunn 🍎
 
+![Idunn](https://github.com/terracoil/idunn/blob/master/docs/images/idunn-ls.png)
+
 > 📘 This is the *story* of Idunn — the idea, the model, and the design choices behind it.
 > For the hands-on reference (every signature, every selection rule), read the
 > [README](../README.md). For the engine internals, see [`ADVANCED.md`](./ADVANCED.md).

@@ -1,10 +1,11 @@
 # Idunn 🍎
+![Idunn](https://github.com/terracoil/idunn/blob/master/docs/images/idunn-logo-square.png)
 
 **Idunn** is a tiny Python dependency-inversion / IoC toolkit built around **constructor-time
 injection only** — small enough to read on a coffee break, opinionated enough to keep your wiring
 honest.
 
-![Idunn](https://github.com/terracoil/idunn/blob/master/docs/images/idunn-ls.png)
+
 
 > *"Everything should be made as simple as possible, but not simpler."* — Albert Einstein
 

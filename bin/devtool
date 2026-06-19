@@ -625,7 +625,7 @@ class FreyjaDevTools:
 
       return None
 
-    def autocommit(
+    def commit(
       self, timeout: int = 120, retry_count: int = 3, timeout_increment: int = 60
     ) -> None:
       """Commit all uncommitted files using Claude to generate an informative commit message.
@@ -638,10 +638,10 @@ class FreyjaDevTools:
       start_time = time.time()
 
       # Step 1: Check if there are any changes to commit
-      result = parent._run_command(
+      res: bool | subprocess.CompletedProcess = parent._run_command(
         ['git', 'status', '--porcelain'], 'Checking for changes', capture_output=True
       )
-      if not isinstance(result, subprocess.CompletedProcess) or not result.stdout.strip():
+      if not isinstance(res, subprocess.CompletedProcess) or not res.stdout.strip():
         parent._print('No changes to commit', 'info')
         return
 
@@ -815,7 +815,7 @@ class FreyjaDevTools:
       return False
 
     def autotag(self, version: str | None = None, auto_increment: bool = True) -> None:
-      """Create git tag with Claude-generated message, auto-incrementing version if needed."""
+      """Create git tag with default message, auto-incrementing version if needed."""
       parent = self.parent
       parent._print(f'🏷️  Creating {parent.project_name} version tag...', 'info')
 
@@ -881,30 +881,9 @@ class FreyjaDevTools:
           parent._print('Failed to commit version change', 'error')
           return
 
-      # Generate tag message with Claude
-      parent._print('🤖 Generating tag message with Claude...', 'info')
-      result = parent._run_command(
-        [
-          'poetry',
-          'run',
-          'claude',
-          '-p',
-          'You must output ONLY a short tag message. NO analysis, NO explanations, NO preamble. Just a brief description for the git tag based on the most recent commit. Do NOT mention Claude, AI, phases, or any automated tools. Output only the tag description itself (e.g., "Add user authentication feature" or "Fix database connection bug").',
-        ],
-        capture_output=True,
-      )
-
-      tag_message = None
-      if isinstance(result, subprocess.CompletedProcess) and result.returncode == 0:
-        tag_message = result.stdout.strip()
-        parent._print(f'Tag message: {tag_message}', 'info')
-      else:
-        parent._print('Failed to generate tag message with Claude', 'error')
-        return
-
       # Create the tag
       parent._print(f'Creating tag: {tag}', 'info')
-      if not self._create_git_tag(final_version, tag_message):
+      if not self._create_git_tag(final_version, f"Tagged at version {final_version}"):
         return
 
       # Push commit and tag to remote

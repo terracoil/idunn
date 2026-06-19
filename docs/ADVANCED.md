@@ -1,4 +1,5 @@
 # Idunn — Advanced & Power-User Notes 🔧
+![Idunn](https://github.com/terracoil/idunn/blob/master/docs/images/idunn.png)
 
 The [README](../README.md) covers the whole everyday API: the three decorators (`@Port`,
 `@Adapter`, `@Invert`) plus the single `Idunn().autodiscover(...)` bootstrap. This document collects
