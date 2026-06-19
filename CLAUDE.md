@@ -5,10 +5,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Package layout
 
 `idunn/` is organized into four layers: `app/` (the `@Port`/`@Adapter`/`@Invert` decorators + the
-`Idunn` container), `domain/` (declaration/metadata, errors, `LifecycleEnum`, `RegistrationKey`,
-`ReportMap`), `internal/` (autodiscovery + decorator support), and `util/` (`Environment`,
-`MetaSingleton`). `tests/test_architecture.py` enforces the allowed import directions: app → any;
-domain → util; internal → domain/util; util → nothing internal.
+`Idunn` facade), `domain/` (declaration/metadata, errors, `LifecycleEnum`, `RegistrationKey`,
+`ReportMap`, `PortBinding`), `internal/` (the inversion engine — `InversionMapper`,
+`InversionResolver`, `InversionValidator` — plus autodiscovery and decorator support), and `util/`
+(`Environment`, `MetaSingleton`). `tests/test_architecture.py` enforces the allowed import
+directions: app → any; domain → util; internal → domain/util; util → nothing internal.
 
 ## Commands
 
@@ -32,41 +33,60 @@ is no `src/` layout despite the name of some legacy config keys.
 
 ## Architecture
 
-Idunn is a constructor-time IoC toolkit. The model is **Port → Adapter → `Idunn`**:
+Idunn is a constructor-time IoC toolkit. The model is **Port → Adapter → `@Invert` consumer**, with
+the `Idunn` facade as a thin front for the engine:
 
 - **`@Port` / `@Adapter` / `@Invert`** all live in `idunn/app/decorators.py`.
   - `@Port` marks a `typing.Protocol` as an injectable contract.
-  - `@Adapter(port, *, key=None, lifecycle=LifecycleEnum.TRANSIENT, default=False, envs=None)` marks a
+  - `@Adapter(port, *, key=None, lifecycle=LifecycleEnum.TRANSIENT, envs=None)` marks a
     concrete class as an implementation; declaration/metadata are frozen dataclasses in `idunn/domain/`.
-  - `@Invert` wraps a *consumer's* constructor: every `@Port`-typed parameter is resolved from the
-    singleton at construction time and assigned to `self.<name>` (a caller-supplied arg overrides).
-- **`Idunn`** (`idunn/app/idunn.py`) is the engine **and** the public container — a process-wide
-  singleton via `metaclass=MetaSingleton` (`idunn/util/meta_singleton.py`). `Idunn()` always returns the
-  same instance; `Idunn().reset(environment=...)` clears state and rebinds the env (test isolation).
-  There is no separate facade class.
+    Unkeyed adapters answer unkeyed resolution; keyed adapters are opt-in (reachable only by their key).
+  - `@Invert` wraps a *consumer's* constructor: every `@Port`-typed parameter is resolved at
+    construction time and assigned to `self.<name>` (a caller-supplied arg overrides). A parameter
+    typed `Port | None`, or any `@Port` param with a default, is **optional** — a missing adapter
+    yields the default/`None` instead of raising. Annotation→port resolution (incl. unwrapping
+    `Optional`) lives in `DecoratorSupport.port_from_annotation`.
+- **`Idunn`** (`idunn/app/idunn.py`) is a thin **facade** — a process-wide singleton via
+  `metaclass=MetaSingleton` (`idunn/util/meta_singleton.py`). Its public surface is just
+  `autodiscover()` and `reset()` (plus `describe()` for introspection). It owns one `InversionMapper`
+  and one `InversionResolver` and delegates to them; `@Invert` reaches resolution through the private
+  `Idunn()._inject` / `Idunn()._has`. `Idunn().reset(environment=...)` clears state and rebinds the env.
+- **The engine lives in `idunn/internal/`:** `InversionMapper` (catalog + env-filtered selection +
+  a lazily-memoized `(environment, RegistrationKey)→AdapterMetadata` cache, invalidated on any
+  registration), `InversionResolver` (recursive construction, cycle detection, `SINGLETON` instance
+  cache), and the stateless `InversionValidator`. There is **no public `resolve()`** — resolving a
+  port by hand was removed deliberately (see `docs/ADVANCED.md`); the only construction trigger is
+  calling an `@Invert`-decorated constructor.
 
 Key invariant: **decorators only attach metadata — they construct nothing.** `autodiscover()`
-(`idunn/internal/auto_discovery.py`, class `AutoDiscovery`) only imports modules; the only things that
-instantiate objects are `Idunn().resolve(port)` and calling an `@Invert`-decorated constructor.
+(`idunn/internal/auto_discovery.py`, class `AutoDiscovery`) only imports modules; objects are
+instantiated only when an `@Invert`-decorated constructor runs.
 
-Resolution (`Idunn.resolve` → `_construct`) is recursive and constructor-time:
+Resolution (`InversionResolver._resolve` → `_construct`) is recursive and constructor-time:
 
-1. select the active adapter for the requested port (precedence below);
-2. inspect the adapter's `__init__`; each `@Port`-annotated parameter is resolved recursively;
+1. ask `InversionMapper.select` for the active adapter for the requested port (precedence below);
+2. inspect the adapter's `__init__`; each `@Port`-annotated parameter is resolved recursively. A
+   `Port | None` param (or any `@Port` param with a default) is **optional** — a missing adapter
+   yields the default/`None` instead of raising. The resolver and `@Invert` share the same
+   annotation→port logic (`DecoratorSupport.port_from_annotation`), so optional deps behave
+   identically at adapter constructors and consumer constructors;
 3. a constructor param with no type hint and no default raises `MissingTypeHintError`;
 4. re-entry into an adapter already under construction raises `InjectionCycleError`;
 5. `LifecycleEnum.SINGLETON` adapters are cached; `TRANSIENT` are rebuilt each resolve.
 
 ### Adapter selection precedence
 
-`resolve(port, key="...")` (or `@Invert(keys=...)`) wins → else an active `default=True` adapter →
-else the first active registered adapter. "Active" is filtered by environment.
+Two rules, both filtered by the active environment: an explicit key (`@Invert(keys=...)`) selects
+that keyed adapter; with no key, resolution returns the single active *unkeyed* adapter (none
+registered → `AdapterNotFoundError`, unless the consumer parameter is optional). Keyed adapters are
+opt-in and never answer an unkeyed resolve.
 
 ### Environments
 
 `Environment` (`idunn/util/environment.py`) resolves the active env from `Idunn().reset(environment=...)`,
 then `IDUNN_ENV`, defaulting to `local` (normalized lowercase, `_`→`-`). `envs=None` means active
-everywhere. Overlapping duplicate keys or defaults for a port raise `InvalidAdapterError`.
+everywhere. Two adapters sharing a port and key (unkeyed counts as `key=None`) that are active in
+overlapping environments raise `InvalidAdapterError`.
 
 ### AutoDiscovery boundary
 
@@ -75,7 +95,10 @@ exact part of `port`, `ports`, `adapter`, or `adapters`; ports register before a
 classes are never registered. It returns a **`ReportMap`** — a `TypedDict` of strings/string-tuples
 (`idunn/domain/report.py`), not a class (there is no `DiscoveryReport`).
 
-The public API is re-exported from `idunn/__init__.py`. `examples/basic_usage.py` is a runnable example.
+The public API is re-exported from `idunn/__init__.py` (the three decorators, `Idunn`,
+`LifecycleEnum`, and the `IdunnError` hierarchy — nothing else). `examples/` is a discoverable
+package; run it with `python -m examples.basic_usage` (the `examples.orchard` subpackage holds the
+`ports`/`adapters`, and the runner demonstrates the `autodiscover` + `@Invert`-root workflow).
 
 ## Code style
 

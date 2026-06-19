@@ -16,7 +16,6 @@ class AdapterMetadata:
   port: type[Any]
   key: str | None
   lifecycle: LifecycleEnum
-  default: bool
   envs: frozenset[str] | None
   order: int
 

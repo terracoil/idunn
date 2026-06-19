@@ -21,6 +21,7 @@ classifiers = [
 
 [tool.poetry.dependencies]
 python = ">=3.11,<4.0"
+pytest-cov = "^7.1.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=8.0,<10.0"

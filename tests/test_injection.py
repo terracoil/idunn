@@ -15,9 +15,11 @@ from idunn.domain import (
   MissingTypeHintError,
 )
 
+from _support import Wiring
+
 
 def test_constructor_time_injection() -> None:
-  table = Idunn()
+  table = Wiring()
 
   @Port
   class AppleBasketPort(Protocol):
@@ -49,7 +51,7 @@ def test_constructor_time_injection() -> None:
 
 
 def test_singleton_lifecycle_reuses_instance() -> None:
-  table = Idunn()
+  table = Wiring()
 
   @Port
   class CounterPort(Protocol):
@@ -67,8 +69,60 @@ def test_singleton_lifecycle_reuses_instance() -> None:
   assert first is second
 
 
-def test_first_adapter_is_default_until_explicit_default_appears() -> None:
-  table = Idunn()
+def test_unkeyed_resolve_returns_unkeyed_adapter() -> None:
+  table = Wiring()
+
+  @Port
+  class AppleBasketPort(Protocol):
+    def take_apple(self) -> str: ...
+
+  @Adapter(AppleBasketPort)
+  class GoldenAppleBasketAdapter(AppleBasketPort):
+    def take_apple(self) -> str:
+      return 'golden apple'
+
+  table.register_adapter(GoldenAppleBasketAdapter)
+
+  assert isinstance(table.resolve(AppleBasketPort), GoldenAppleBasketAdapter)
+
+  @Adapter(AppleBasketPort, key='orchard')
+  class OrchardAppleBasketAdapter(AppleBasketPort):
+    def take_apple(self) -> str:
+      return 'orchard apple'
+
+  table.register_adapter(OrchardAppleBasketAdapter)
+
+  # The keyed adapter is opt-in; an unkeyed resolve still returns the unkeyed one.
+  assert isinstance(table.resolve(AppleBasketPort), GoldenAppleBasketAdapter)
+  assert isinstance(table.resolve(AppleBasketPort, key='orchard'), OrchardAppleBasketAdapter)
+
+
+def test_unkeyed_resolve_ignores_keyed_adapters() -> None:
+  table = Wiring()
+
+  @Port
+  class AppleBasketPort(Protocol):
+    def take_apple(self) -> str: ...
+
+  # Register the keyed adapter FIRST to prove registration order does not leak it in.
+  @Adapter(AppleBasketPort, key='orchard')
+  class OrchardAppleBasketAdapter(AppleBasketPort):
+    def take_apple(self) -> str:
+      return 'orchard apple'
+
+  @Adapter(AppleBasketPort)
+  class GoldenAppleBasketAdapter(AppleBasketPort):
+    def take_apple(self) -> str:
+      return 'golden apple'
+
+  table.register_adapter(OrchardAppleBasketAdapter)
+  table.register_adapter(GoldenAppleBasketAdapter)
+
+  assert isinstance(table.resolve(AppleBasketPort), GoldenAppleBasketAdapter)
+
+
+def test_unkeyed_resolve_with_only_keyed_adapters_raises() -> None:
+  table = Wiring()
 
   @Port
   class AppleBasketPort(Protocol):
@@ -81,33 +135,25 @@ def test_first_adapter_is_default_until_explicit_default_appears() -> None:
 
   table.register_adapter(OrchardAppleBasketAdapter)
 
-  assert isinstance(table.resolve(AppleBasketPort), OrchardAppleBasketAdapter)
-
-  @Adapter(AppleBasketPort, key='golden', default=True)
-  class GoldenAppleBasketAdapter(AppleBasketPort):
-    def take_apple(self) -> str:
-      return 'golden apple'
-
-  table.register_adapter(GoldenAppleBasketAdapter)
-
-  assert isinstance(table.resolve(AppleBasketPort), GoldenAppleBasketAdapter)
+  with pytest.raises(AdapterNotFoundError):
+    table.resolve(AppleBasketPort)
   assert isinstance(table.resolve(AppleBasketPort, key='orchard'), OrchardAppleBasketAdapter)
 
 
-def test_environment_specific_default_selection(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_environment_specific_selection(monkeypatch: pytest.MonkeyPatch) -> None:
   monkeypatch.setenv('IDUNN_ENV', 'test')
-  table = Idunn().reset()
+  table = Wiring()
 
   @Port
   class PaymentPort(Protocol):
     def charge(self) -> str: ...
 
-  @Adapter(PaymentPort, key='stripe', default=True, envs={'prod'})
+  @Adapter(PaymentPort, envs={'prod'})
   class StripePaymentAdapter(PaymentPort):
     def charge(self) -> str:
       return 'stripe'
 
-  @Adapter(PaymentPort, key='fake', default=True, envs={'test', 'ci'})
+  @Adapter(PaymentPort, envs={'test', 'ci'})
   class FakePaymentAdapter(PaymentPort):
     def charge(self) -> str:
       return 'fake'
@@ -119,18 +165,18 @@ def test_environment_specific_default_selection(monkeypatch: pytest.MonkeyPatch)
 
 
 def test_environment_can_be_passed_to_table() -> None:
-  table = Idunn().reset(environment='prod')
+  table = Wiring(environment='prod')
 
   @Port
   class PaymentPort(Protocol):
     def charge(self) -> str: ...
 
-  @Adapter(PaymentPort, key='stripe', default=True, envs={'prod'})
+  @Adapter(PaymentPort, envs={'prod'})
   class StripePaymentAdapter(PaymentPort):
     def charge(self) -> str:
       return 'stripe'
 
-  @Adapter(PaymentPort, key='fake', default=True, envs={'test'})
+  @Adapter(PaymentPort, envs={'test'})
   class FakePaymentAdapter(PaymentPort):
     def charge(self) -> str:
       return 'fake'
@@ -142,7 +188,7 @@ def test_environment_can_be_passed_to_table() -> None:
 
 
 def test_adapter_without_envs_is_available_everywhere() -> None:
-  table = Idunn().reset(environment='prod')
+  table = Wiring(environment='prod')
 
   @Port
   class ClockPort(Protocol):
@@ -158,7 +204,7 @@ def test_adapter_without_envs_is_available_everywhere() -> None:
 
 
 def test_same_key_is_allowed_for_disjoint_environments() -> None:
-  table = Idunn().reset(environment='prod')
+  table = Wiring(environment='prod')
 
   @Port
   class PaymentPort(Protocol):
@@ -179,7 +225,7 @@ def test_same_key_is_allowed_for_disjoint_environments() -> None:
 
 
 def test_duplicate_key_with_overlapping_environments_raises() -> None:
-  table = Idunn().reset(environment='prod')
+  table = Wiring(environment='prod')
 
   @Port
   class PaymentPort(Protocol):
@@ -199,18 +245,19 @@ def test_duplicate_key_with_overlapping_environments_raises() -> None:
     table.register_adapter(BraintreePaymentAdapter)
 
 
-def test_duplicate_default_with_overlapping_environments_raises() -> None:
-  table = Idunn().reset(environment='prod')
+def test_duplicate_unkeyed_adapters_in_overlapping_envs_raises() -> None:
+  table = Wiring(environment='prod')
 
   @Port
   class PaymentPort(Protocol):
     pass
 
-  @Adapter(PaymentPort, key='stripe', default=True, envs={'prod'})
+  # Two unkeyed adapters (both key=None) active in 'prod' collide via key-overlap.
+  @Adapter(PaymentPort, envs={'prod'})
   class StripePaymentAdapter(PaymentPort):
     pass
 
-  @Adapter(PaymentPort, key='braintree', default=True, envs={'prod'})
+  @Adapter(PaymentPort, envs={'prod'})
   class BraintreePaymentAdapter(PaymentPort):
     pass
 
@@ -221,7 +268,7 @@ def test_duplicate_default_with_overlapping_environments_raises() -> None:
 
 
 def test_invalid_adapter_does_not_satisfy_port() -> None:
-  table = Idunn()
+  table = Wiring()
 
   @Port
   class AppleBasketPort(Protocol):
@@ -238,7 +285,7 @@ def test_invalid_adapter_does_not_satisfy_port() -> None:
 
 
 def test_missing_explicit_key_raises() -> None:
-  table = Idunn()
+  table = Wiring()
 
   @Port
   class AppleBasketPort(Protocol):
@@ -255,7 +302,7 @@ def test_missing_explicit_key_raises() -> None:
 
 
 def test_non_port_resolution_raises() -> None:
-  table = Idunn()
+  table = Wiring()
 
   class NotAPort:
     pass
@@ -265,7 +312,7 @@ def test_non_port_resolution_raises() -> None:
 
 
 def test_constructor_parameter_without_type_hint_raises() -> None:
-  table = Idunn()
+  table = Wiring()
 
   @Port
   class ServicePort(Protocol):
@@ -283,7 +330,7 @@ def test_constructor_parameter_without_type_hint_raises() -> None:
 
 
 def test_constructor_cycle_raises() -> None:
-  table = Idunn()
+  table = Wiring()
 
   @Port
   class FirstPort(Protocol):
@@ -310,6 +357,60 @@ def test_constructor_cycle_raises() -> None:
     table.resolve(FirstPort)
 
 
+def test_constructor_optional_dependency_falls_back_when_absent() -> None:
+  table = Wiring()
+
+  @Port
+  class SidecarPort(Protocol):
+    def ping(self) -> str: ...
+
+  @Port
+  class ServicePort(Protocol):
+    def run(self) -> str: ...
+
+  @Adapter(ServicePort)
+  class ServiceAdapter(ServicePort):
+    def __init__(self, sidecar: SidecarPort | None = None) -> None:
+      self._sidecar = sidecar
+
+    def run(self) -> str:
+      return 'no-sidecar' if self._sidecar is None else self._sidecar.ping()
+
+  table.register_adapter(ServiceAdapter)  # no SidecarPort adapter is registered
+
+  assert table.resolve(ServicePort).run() == 'no-sidecar'
+
+
+def test_constructor_optional_dependency_injects_when_present() -> None:
+  table = Wiring()
+
+  @Port
+  class SidecarPort(Protocol):
+    def ping(self) -> str: ...
+
+  @Adapter(SidecarPort)
+  class SidecarAdapter(SidecarPort):
+    def ping(self) -> str:
+      return 'pong'
+
+  @Port
+  class ServicePort(Protocol):
+    def run(self) -> str: ...
+
+  @Adapter(ServicePort)
+  class ServiceAdapter(ServicePort):
+    def __init__(self, sidecar: SidecarPort | None = None) -> None:
+      self._sidecar = sidecar
+
+    def run(self) -> str:
+      return 'none' if self._sidecar is None else self._sidecar.ping()
+
+  table.register_adapter(SidecarAdapter)
+  table.register_adapter(ServiceAdapter)
+
+  assert table.resolve(ServicePort).run() == 'pong'
+
+
 def test_autodiscover_imports_decorated_adapters_under_adapters_package(
   tmp_path: Path,
   monkeypatch: pytest.MonkeyPatch,
@@ -332,7 +433,7 @@ def test_autodiscover_imports_decorated_adapters_under_adapters_package(
                 from idunn.app import Adapter
                 from sample_app_one.ports import AppleBasketPort
 
-                @Adapter(AppleBasketPort, default=True)
+                @Adapter(AppleBasketPort)
                 class GoldenAppleBasketAdapter(AppleBasketPort):
                     def take_apple(self) -> str:
                         return "golden apple"
@@ -345,7 +446,7 @@ def test_autodiscover_imports_decorated_adapters_under_adapters_package(
   table = Idunn()
   report = table.autodiscover(package_name)
   ports = importlib.import_module(f'{package_name}.ports')
-  basket = table.resolve(ports.AppleBasketPort)
+  basket = table._inject(ports.AppleBasketPort)
 
   assert basket.take_apple() == 'golden apple'
   assert report['imported_adapter_modules'] == (
@@ -353,6 +454,8 @@ def test_autodiscover_imports_decorated_adapters_under_adapters_package(
     f'{package_name}.adapters.apple',
   )
   assert len(report['registered_adapters']) == 1
+  # The adapter subclasses its port but must NOT be mis-registered as a port.
+  assert report['registered_ports'] == (f'{package_name}.ports.AppleBasketPort',)
 
 
 def test_autodiscover_finds_nested_adapters_packages(
@@ -391,7 +494,7 @@ def test_autodiscover_finds_nested_adapters_packages(
   table = Idunn()
   report = table.autodiscover(package_name)
   ports = importlib.import_module(f'{package_name}.ports')
-  payment = table.resolve(ports.PaymentPort)
+  payment = table._inject(ports.PaymentPort)
 
   assert payment.charge() == 'stripe'
   assert f'{package_name}.billing.adapters.payment' in report['imported_modules']
@@ -432,7 +535,7 @@ def test_autodiscover_does_not_register_undecorated_classes(
   ports = importlib.import_module(f'{package_name}.ports')
 
   with pytest.raises(AdapterNotFoundError):
-    table.resolve(ports.AppleBasketPort)
+    table._inject(ports.AppleBasketPort)
   assert report['registered_adapters'] == ()
 
 
@@ -511,7 +614,7 @@ def test_idunn_facade_can_autodiscover_and_resolve(
 
   Idunn().autodiscover(package_name)
   ports = importlib.import_module(f'{package_name}.ports')
-  basket = Idunn().resolve(ports.AppleBasketPort)
+  basket = Idunn()._inject(ports.AppleBasketPort)
 
   assert basket.take_apple() == 'facade apple'
 
@@ -540,9 +643,7 @@ def test_autodiscover_imports_and_registers_ports_without_adapters(
 
   table = Idunn()
   report = table.autodiscover(package_name)
-  ports = importlib.import_module(f'{package_name}.ports')
 
-  assert ports.AppleBasketPort in table.ports
   assert report['imported_port_modules'] == (f'{package_name}.ports',)
   assert report['registered_ports'] == (f'{package_name}.ports.AppleBasketPort',)
   assert report['registered_adapters'] == ()
@@ -619,7 +720,7 @@ def test_autodiscover_registers_all_adapters_before_constructor_injection(
     f'{package_name}.adapters.z_apple.GoldenAppleBasketAdapter',
   )
 
-  feast = table.resolve(ports.FeastPort)
+  feast = table._inject(ports.FeastPort)
 
   assert feast.serve() == 'feast with golden apple'
   assert feast_module.constructed == 1

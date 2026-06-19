@@ -29,10 +29,17 @@ def Adapter(
   *,
   key: str | None = None,
   lifecycle: LifecycleEnum | str = LifecycleEnum.TRANSIENT,
-  default: bool = False,
   envs: Iterable[str] | str | None = None,
 ) -> Callable[[T], T]:
-  """Declare a concrete class as an adapter for a port."""
+  """Declare a concrete class as an adapter for a port.
+
+  Without ``key`` the adapter is *unkeyed*: it answers plain ``@Invert`` injection
+  — exactly one unkeyed adapter may be active per port in any environment.
+
+  With ``key`` the adapter is *opt-in*: it answers only ``@Invert(keys={...})`` and
+  is ignored by unkeyed resolution, so it never competes with the plain
+  implementation.
+  """
   if not getattr(port, '__idunn_port__', False):
     message = f'Adapter port is not marked with @Port: {port.__qualname__}'
     raise InvalidPortError(message)
@@ -48,7 +55,6 @@ def Adapter(
       port=port,
       key=key,
       lifecycle=lifecycle_value,
-      default=default,
       envs=env_values,
     )
     cls.__idunn_adapter__ = True
@@ -78,9 +84,15 @@ def Invert(
   """Auto-inject registered adapters for ``@Port``-typed constructor parameters.
 
   Decorate a constructor; every parameter whose type hint is a ``@Port`` is
-  resolved from the process-wide :class:`Idunn` singleton at construction time
+  resolved from the process-wide :class:`Idunn` container at construction time
   and assigned to ``self.<name>`` (the body may override; a caller-supplied
-  argument always wins).
+  argument always wins). Constructing the decorated object is the sanctioned way
+  to start an object graph — there is no public ``resolve``.
+
+  A parameter typed ``Port | None`` (or any ``@Port`` parameter with a default) is
+  *optional*: if no adapter is active it falls back to the default / ``None``
+  instead of raising. Pick a *keyed* adapter with ``@Invert(keys={'param': 'name'})``,
+  choosing right at the point of use.
 
   Forms::
 
@@ -97,20 +109,25 @@ def Invert(
   def decorate(func: Init) -> Init:
     signature = inspect.signature(func)
     hints = get_type_hints(func)
-    port_params: dict[str, type[Any]] = dict(explicit_ports)
-    for name, annotation in hints.items():
-      if name != 'return' and getattr(annotation, '__idunn_port__', False):
-        port_params[name] = annotation
+    discovered, optional_params = DecoratorSupport.extract_port_parameters(hints)
+    port_params: dict[str, type[Any]] = {**explicit_ports, **discovered}
 
     @functools.wraps(func)
     def wrapper(self: Any, *args: Any, **kwargs: Any) -> None:
       supplied = signature.bind_partial(self, *args, **kwargs).arguments
       container = Idunn()
       for name, port in port_params.items():
+        key = key_map.get(name)
+        parameter = signature.parameters[name]
+        optional = name in optional_params or parameter.default is not inspect.Parameter.empty
         if name in supplied:
-          value = supplied[name]
+          value = supplied[name]  # a caller-supplied argument always wins
+        elif optional and not container._has(port, key):
+          # optional dep with no active adapter: fall back to the default (or None)
+          value = None if parameter.default is inspect.Parameter.empty else parameter.default
+          kwargs[name] = value
         else:
-          value = container.resolve(port, key=key_map.get(name))
+          value = container._inject(port, key)  # required, or an adapter is available
           kwargs[name] = value
         setattr(self, name, value)  # the port always lands on self.<name>
       func(self, *args, **kwargs)

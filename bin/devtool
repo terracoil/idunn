@@ -20,8 +20,6 @@ from typing import Any
 from freyja import FreyjaCLI
 from freyja.help.help_formatter import HierarchicalHelpFormatter
 
-from idunn.util import ConsoleFormatter, DependencyAnalyzer, JsonFormatter
-
 # Add the project root to the Python path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -928,111 +926,6 @@ class FreyjaDevTools:
           f'To push manually, run: {parent.colors["blue"]}git push && git push --tags{parent.colors["nc"]}',
           'info',
         )
-
-    def analyze_deps(
-      self,
-      output_format: str = 'console',
-      output_file: str | None = None,
-      filter_package: str | None = None,
-      include_external: bool = False,
-      show_classes: bool = True,
-      show_cycles: bool = True,
-      max_depth: int = 10,
-    ) -> None:
-      """Analyze project dependencies and optionally generate diagrams.
-
-      Performs AST-based analysis to extract imports, class hierarchies, and package relationships.
-
-      :param output_format: Output format - 'console', 'json', or 'diagram'
-      :param output_file: Optional output file path (defaults based on format)
-      :param filter_package: Filter to specific package (e.g., 'freyja.cli')
-      :param include_external: Include external (non-project) dependencies
-      :param show_classes: Include class-level dependency analysis
-      :param show_cycles: Detect and report circular dependencies
-      :param max_depth: Maximum depth for dependency traversal
-      """
-      parent = self.parent
-      parent._print(f'🔍 Analyzing {parent.project_name} dependencies...', 'info')
-
-      # Create analyzer instance
-      analyzer = DependencyAnalyzer(
-        project_path=Path(parent.project_src),
-        include_external=include_external,
-        max_depth=max_depth,
-      )
-
-      # Run analysis
-      parent._print('📊 Running AST analysis...', 'info')
-      raw_analysis = analyzer.analyze()
-
-      # Extract dependencies
-      package_deps = analyzer.extract_package_dependencies(raw_analysis)
-      class_deps = analyzer.extract_class_dependencies(raw_analysis)
-
-      # Filter if requested
-      if filter_package:
-        parent._print(f'🔍 Filtering to package: {filter_package}', 'info')
-        raw_analysis = analyzer.filter_results(raw_analysis, filter_package)
-        package_deps = {k: v for k, v in package_deps.items() if k.startswith(filter_package)}
-        class_deps = {k: v for k, v in class_deps.items() if k.startswith(filter_package)}
-
-      # Detect cycles if requested
-      cycles = []
-      if show_cycles:
-        parent._print('🔄 Detecting circular dependencies...', 'info')
-        cycles = analyzer.detect_cycles(package_deps)
-        if cycles:
-          parent._print(f'⚠️ Found {len(cycles)} circular dependencies!', 'warning')
-
-      # Prepare analysis result
-      analysis_result = {
-        'raw_analysis': raw_analysis,
-        'package_dependencies': package_deps,
-        'class_dependencies': class_deps,
-        'cycles': cycles,
-        'metadata': {
-          'project_name': parent.project_name,
-          'total_modules': len(raw_analysis),
-          'total_packages': len(
-            set(k.split('.')[1] if '.' in k else k for k in package_deps.keys())
-          ),
-          'total_classes': len(class_deps),
-        },
-      }
-
-      # Format output
-      formatter = None
-      if output_format == 'console':
-        formatter = ConsoleFormatter(
-          show_classes=show_classes, show_cycles=show_cycles, colors=parent.colors
-        )
-      elif output_format == 'json':
-        formatter = JsonFormatter(pretty=True)
-      elif output_format == 'diagram':
-        parent._print('Diagram generation not yet implemented', 'error')
-        return
-      else:
-        parent._print(f'Unknown output format: {output_format}', 'error')
-        return
-
-      # Generate output
-      formatted_output = formatter.format(analysis_result)
-
-      # Write output
-      if output_file:
-        with open(output_file, 'w') as f:
-          f.write(formatted_output)
-        parent._print(f'✅ Analysis saved to {output_file}', 'success')
-      else:
-        print(formatted_output)
-
-      # Print summary
-      metadata = analysis_result['metadata']
-      parent._print(
-        f'📈 Analysis complete: {metadata["total_modules"]} modules, '
-        f'{metadata["total_packages"]} packages, {metadata["total_classes"]} classes',
-        'success',
-      )
 
   class Quality:
     """Code quality, linting, diagnostics, and completion operations."""

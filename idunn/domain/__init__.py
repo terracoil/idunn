@@ -12,6 +12,7 @@ from .errors import (
   MissingTypeHintError,
 )
 from .lifecycle_enum import LifecycleEnum
+from .port_binding import PortBinding
 from .registration_key import RegistrationKey
 from .report import ReportMap
 
@@ -26,6 +27,7 @@ __all__ = (
   'InvalidPortError',
   'LifecycleEnum',
   'MissingTypeHintError',
+  'PortBinding',
   'RegistrationKey',
   'ReportMap',
 )

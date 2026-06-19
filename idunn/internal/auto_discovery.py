@@ -9,6 +9,9 @@ from types import ModuleType
 from typing import Any
 
 from idunn.domain import DiscoveryError, ReportMap
+from idunn.util import QualifiedName
+
+from .inversion_mapper import InversionMapper
 
 
 class AutoDiscovery:
@@ -20,7 +23,7 @@ class AutoDiscovery:
   def autodiscover(
     self,
     *,
-    table: Any,
+    mapper: InversionMapper,
     root_package: str | ModuleType,
     port_package_names: frozenset[str] | None = None,
     adapter_package_names: frozenset[str] | None = None,
@@ -49,15 +52,15 @@ class AutoDiscovery:
       strict=strict,
       module_kind='port',
     )
-    registered_ports = self._register_decorated_ports(table=table, modules=port_modules)
+    registered_ports = self._register_decorated_ports(mapper=mapper, modules=port_modules)
     adapter_modules = self._import_modules(
       module_names=adapter_module_names,
       strict=strict,
       module_kind='adapter',
     )
-    additional_ports = self._register_decorated_ports(table=table, modules=adapter_modules)
+    additional_ports = self._register_decorated_ports(mapper=mapper, modules=adapter_modules)
     registered_adapters = self._register_decorated_adapters(
-      table=table,
+      mapper=mapper,
       modules=adapter_modules,
     )
     imported_port_modules = tuple(module.__name__ for module in port_modules)
@@ -68,15 +71,10 @@ class AutoDiscovery:
       'imported_adapter_modules': imported_adapter_modules,
       'imported_modules': (*imported_port_modules, *imported_adapter_modules),
       'registered_ports': tuple(
-        self._qualified_name(cls) for cls in (*registered_ports, *additional_ports)
+        QualifiedName.of(cls) for cls in (*registered_ports, *additional_ports)
       ),
-      'registered_adapters': tuple(self._qualified_name(cls) for cls in registered_adapters),
+      'registered_adapters': tuple(QualifiedName.of(cls) for cls in registered_adapters),
     }
-
-  @staticmethod
-  def _qualified_name(obj: type[Any]) -> str:
-    """Render a class as ``module.QualName`` (kept inline to avoid an app import)."""
-    return f'{obj.__module__}.{obj.__qualname__}'
 
   def _normalized_names(
     self,
@@ -171,39 +169,34 @@ class AutoDiscovery:
   def _register_decorated_ports(
     self,
     *,
-    table: Any,
+    mapper: InversionMapper,
     modules: tuple[ModuleType, ...],
   ) -> tuple[type[Any], ...]:
     registered: list[type[Any]] = []
     for module in modules:
-      for candidate in self._decorated_port_classes(module=module):
-        if table.register_port(candidate):
+      for candidate in self._decorated_classes(module=module, marker='__idunn_port__'):
+        if mapper.register_port(candidate):
           registered.append(candidate)
     return tuple(registered)
 
   def _register_decorated_adapters(
     self,
     *,
-    table: Any,
+    mapper: InversionMapper,
     modules: tuple[ModuleType, ...],
   ) -> tuple[type[Any], ...]:
     registered: list[type[Any]] = []
     for module in modules:
-      for candidate in self._decorated_adapter_classes(module=module):
-        if table.register_adapter(candidate):
+      for candidate in self._decorated_classes(module=module, marker='__idunn_adapter__'):
+        if mapper.register_adapter(candidate):
           registered.append(candidate)
     return tuple(registered)
 
-  def _decorated_port_classes(self, *, module: ModuleType) -> tuple[type[Any], ...]:
+  def _decorated_classes(self, *, module: ModuleType, marker: str) -> tuple[type[Any], ...]:
+    # Own-__dict__ check: an adapter subclassing its port *inherits* __idunn_port__,
+    # so getattr would mis-detect adapters as ports. The flag lives on the decorated class only.
     return tuple(
       candidate
       for _, candidate in inspect.getmembers(module, inspect.isclass)
-      if candidate.__module__ == module.__name__ and getattr(candidate, '__idunn_port__', False)
-    )
-
-  def _decorated_adapter_classes(self, *, module: ModuleType) -> tuple[type[Any], ...]:
-    return tuple(
-      candidate
-      for _, candidate in inspect.getmembers(module, inspect.isclass)
-      if candidate.__module__ == module.__name__ and getattr(candidate, '__idunn_adapter__', False)
+      if candidate.__module__ == module.__name__ and marker in candidate.__dict__
     )
