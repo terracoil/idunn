@@ -106,3 +106,38 @@ def test_domain_only_depends_on_util() -> None:
 def test_probe_would_flag_a_synthetic_cross_layer_edge() -> None:
   assert LayerProbe._layer_of_dotted('idunn.app.idunn') == 'app'
   assert 'app' not in ALLOWED['util']
+
+
+def test_probe_flags_a_real_violating_edge() -> None:
+  # End-to-end on real source: prove imported_layers actually detects internal edges,
+  # and that the matrix would reject one if the file lived in a stricter layer.
+  mapper_file = PACKAGE_ROOT / 'internal' / 'inversion_mapper.py'
+  target_layers = {layer for layer, _ in LayerProbe.imported_layers(mapper_file)}
+  assert {'domain', 'util'} <= target_layers
+  assert 'domain' not in ALLOWED['util']  # so a util->domain edge here would be flagged
+
+  # Synthetic node: a util module importing idunn.app resolves to a forbidden 'app' edge.
+  node = ast.parse('from idunn.app import Idunn').body[0]
+  targets = LayerProbe._import_targets(node, ['idunn', 'util'])
+  assert LayerProbe._layer_of_dotted(targets[0]) == 'app'
+  assert 'app' not in ALLOWED['util']
+
+
+def test_layer_of_dotted_rejects_external_and_bare() -> None:
+  assert LayerProbe._layer_of_dotted('os') is None
+  assert LayerProbe._layer_of_dotted('idunn') is None
+  assert LayerProbe._layer_of_dotted('idunn.notalayer') is None
+
+
+def test_import_targets_handles_bare_relative_and_multi() -> None:
+  package = ['idunn', 'internal']
+  bare = ast.parse('from . import decorator_support').body[0]
+  assert LayerProbe._import_targets(bare, package) == ['idunn.internal']
+  multi = ast.parse('import os, sys').body[0]
+  assert LayerProbe._import_targets(multi, package) == ['os', 'sys']
+
+
+def test_layer_of_path_returns_none_for_root_and_nonlayer() -> None:
+  assert LayerProbe.layer_of_path(PACKAGE_ROOT / '__init__.py') is None
+  assert LayerProbe.layer_of_path(PACKAGE_ROOT / 'scripts' / 'helper.py') is None
+  assert LayerProbe.layer_of_path(PACKAGE_ROOT / 'app' / 'idunn.py') == 'app'

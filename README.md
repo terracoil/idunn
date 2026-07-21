@@ -1,8 +1,8 @@
 # Idunn 🍎
-![Idunn](https://github.com/terracoil/idunn/blob/master/docs/images/idunn-logo-square.png)
+<img src="https://github.com/terracoil/idunn/raw/master/docs/images/idunn-logo-square.png" alt="Idunn" width=800/>
 
 **Idunn** is a tiny Python dependency-inversion / IoC toolkit built around **constructor-time
-injection only** — small enough to read on a coffee break, opinionated enough to keep your wiring
+injection only** — small enough to read on a coffee break, opinionated enoug3h to keep your wiring
 honest.
 
 
@@ -337,7 +337,7 @@ Even if the class structurally satisfies the port, Idunn ignores it unless it is
 `@Adapter(...)`. Looking the part is not the same as wearing the badge.
 
 ## Port implementation rule 🔌
-![Idunn2](![Idunn](https://github.com/terracoil/idunn/blob/master/docs/images/idunn-logo-md.png))
+![Idunn2](![Idunn](https://github.com/terracoil/idunn/blob/master/docs/images/idunn-logo-vert-md.png))
 
 Adapters must satisfy their ports. Idunn does **not** synthesize, monkey-patch, or mutate adapter
 classes.

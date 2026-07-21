@@ -1,11 +1,11 @@
-[tool.poetry]
+[project]
 name = "idunn"
+authors = [{ name = "Steven Miers", email = "steven.miers@gmail.com" }]
+readme = "README.md"
 version = "0.0.1"
 description = "A tiny constructor-time dependency inversion toolkit for Python."
-authors = ["Steven Miers <steven@example.com>"]
-readme = "README.md"
 license = "MIT"
-    packages = [{ include = "idunn"}]
+packages = [{ include = "idunn"}]
 keywords = ["dependency-injection", "inversion-of-control", "ioc", "decorators", "protocols"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -24,7 +24,6 @@ Homepage = "https://github.com/terracoil/idunn/blob/master/README.md"
 Repository = "https://github.com/terracoil/idunn"
 Documentation = "https://github.com/terracoil/idunn/blob/main/docs/README.md"
 
-
 [tool.poetry.dependencies]
 python = ">=3.11,<4.0"
 pytest-cov = "^7.1.0"
@@ -34,6 +33,7 @@ pytest = ">=8.0,<10.0"
 ruff = ">=0.8,<1.0"
 mypy = ">=1.13,<3.0"
 freyja = "^2.0.2"
+poetry-dynamic-versioning =">=1.9.1,<2.0.0"
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
