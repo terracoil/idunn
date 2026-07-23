@@ -1,6 +1,6 @@
 # About Idunn 🍎
 
-![Idunn](https://github.com/terracoil/idunn/blob/master/docs/images/idunn-ls.png)
+<img src="https://github.com/terracoil/idunn/raw/master/docs/images/idunn-landscape-2560x900.png" alt="Idunn" width=800/>
 
 > 📘 This is the *story* of Idunn — the idea, the model, and the design choices behind it.
 > For the hands-on reference (every signature, every selection rule), read the

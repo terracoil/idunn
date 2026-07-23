@@ -23,6 +23,8 @@ classifiers = [
 Homepage = "https://github.com/terracoil/idunn/blob/master/README.md"
 Repository = "https://github.com/terracoil/idunn"
 Documentation = "https://github.com/terracoil/idunn/blob/main/docs/README.md"
+Freyja = "https://pypi.org/project/freyja"
+Modgud = "https://pypi.org/project/modgud"
 
 [tool.poetry.dependencies]
 python = ">=3.11,<4.0"
