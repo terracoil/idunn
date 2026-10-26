@@ -64,3 +64,5 @@ logs
 #docs/architecture/
 *.bkp
 *.dtmp
+CLAUDE.md
+.claude/

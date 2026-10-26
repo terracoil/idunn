@@ -1,11 +1,9 @@
-# Idunn 🍎
+# Idunn
 <img src="https://github.com/terracoil/idunn/raw/master/docs/images/idunn-landscape-2560x900.png" alt="Idunn" width=800/>
 
 **Idunn** is a tiny Python dependency-inversion / IoC toolkit built around **constructor-time
-injection only** — small enough to read on a coffee break, opinionated enoug3h to keep your wiring
+injection only** — small enough to read on a coffee break, opinionated enough to keep your wiring
 honest.
-
-
 
 > *"Everything should be made as simple as possible, but not simpler."* — Albert Einstein
 
@@ -18,45 +16,37 @@ sigh. ✨
 > Port → Adapter → `@Invert` model, and why the short "no" list *is* the feature. Then come
 > back here for the reference.
 
-# 📚 Table-of-Contents
+# Table-of-Contents
 
-- [The whole API 🎟️](#the-whole-api-)
-- [The three decorators 🍎](#the-three-decorators-)
-  - [`@Port` 🔌](#port-)
-  - [`@Adapter` 🧩](#adapter-)
-  - [`@Invert` 🪄](#invert-)
-- [Quick-start Guide 🌱](#quick-start-guide-)
-- [Design stance 🧭](#design-stance-)
-- [Install locally 📦](#install-locally-)
-- [Basic usage 🪄](#basic-usage-)
-- [Recommended application layout 🌳](#recommended-application-layout-)
-- [AutoDiscovery rule 🔍](#autodiscovery-rule-)
-- [Port implementation rule 🔌](#port-implementation-rule-)
-- [Mapping adapters to ports 🍎](#mapping-adapters-to-ports-)
-  - [With no parameters](#with-no-parameters)
-  - [Via the environment](#via-the-environment)
-  - [Environment matching rules](#environment-matching-rules)
-  - [Via keys](#via-keys)
-  - [Same key, different environments](#same-key-different-environments)
-- [Lifecycles 🔄](#lifecycles-)
-- [Known limitations 🚧](#known-limitations-)
-- [Development workflow 🧪](#development-workflow-)
-- [What Idunn intentionally does not do 🚫](#what-idunn-intentionally-does-not-do-)
-- [Going further 📒](#going-further-)
-- [Code style constraints 📐](#code-style-constraints-)
-- [Version target 🐍](#version-target-)
-- [Before publishing to PyPI 🏁](#before-publishing-to-pypi-)
+- [The whole API](#the-whole-api-)
+- [The three decorators](#the-three-decorators-)
+- [Quick-start Guide](#quick-start-guide-)
+- [Design stance](#design-stance-)
+- [Install locally](#install-locally-)
+- [Basic usage](#basic-usage-)
+- [Recommended application layout](#recommended-application-layout-)
+- [AutoDiscovery rule](#autodiscovery-rule-)
+- [Port implementation rule](#port-implementation-rule-)
+- [Mapping adapters to ports](#mapping-adapters-to-ports-)
+- [Lifecycles](#lifecycles-)
+- [Known limitations](#known-limitations-)
+- [Development workflow](#development-workflow-)
+- [What Idunn intentionally does not do](#what-idunn-intentionally-does-not-do-)
+- [Going further](#going-further-)
+- [Code style constraints](#code-style-constraints-)
+- [Version target](#version-target-)
+- [Before publishing to PyPI](#before-publishing-to-pypi-)
 
 ## The whole API 🎟️
 
-Everything you import lives at the top level of the `idunn` package — you never reach into
-sub-packages:
+The decorators and the container import from the top level of the `idunn` package; the
+enumerations and exceptions you wire things up with come from `idunn.domain`:
 
 ```python
-from idunn import Port, Adapter, Invert     # the three decorators
-from idunn import Idunn                      # the container (you touch it once: autodiscover)
-from idunn import LifecycleEnum              # passed to @Adapter
-from idunn import IdunnError                 # base of the exception hierarchy you catch
+from idunn import Port, Adapter, Invert           # the three decorators
+from idunn import Idunn                            # the container (you touch it once: autodiscover)
+from idunn.domain import LifecycleEnum            # passed to @Adapter
+from idunn.domain import IdunnError               # base of the exception hierarchy you catch
 ```
 
 That's the entire surface: **three decorators**, the **`Idunn().autodiscover(...)`** bootstrap call,
@@ -67,8 +57,11 @@ happen behind the container — see [`docs/ADVANCED.md`](./docs/ADVANCED.md) if 
 
 Idunn is *just* these three decorators. Define a contract, bind an implementation, receive it — no
 container code in sight.
+* **[`@Port`](#port) 🔌** — marks a `typing.Protocol` as an injectable contract.
+* **[`@Adapter`](#adapter-) 🧩** — binds a concrete class to a port as its implementation (attaches metadata, constructs nothing).
+* **[`@Invert`](#invert-) 🪄** — wraps a consumer's constructor, resolving each `@Port`-typed parameter at construction time.
 
-### `@Port` 🔌
+### @Port
 
 ```python
 def Port(cls: T) -> T
@@ -337,7 +330,7 @@ Even if the class structurally satisfies the port, Idunn ignores it unless it is
 `@Adapter(...)`. Looking the part is not the same as wearing the badge.
 
 ## Port implementation rule 🔌
-<img src="https://github.com/terracoil/idunn/raw/master/docs/images/idunn-logo-figure.png" alt="Idunn" width=350/>
+<img src="https://github.com/terracoil/idunn/raw/master/docs/images/idunn-apple.png" alt="Idunn" width=350/>
 
 Adapters must satisfy their ports. Idunn does **not** synthesize, monkey-patch, or mutate adapter
 classes.
@@ -561,7 +554,7 @@ in [`docs/classes.md`](./docs/classes.md).
 
 ### Exceptions
 
-All inherit from `IdunnError`, and all import from `idunn`:
+All inherit from `IdunnError`, and all import from `idunn.domain`:
 
 | Class | Raised when… |
 |-------|--------------|
