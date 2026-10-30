@@ -2,9 +2,10 @@
 name = "idunn"
 authors = [{ name = "Steven Miers", email = "steven.miers@gmail.com" }]
 readme = "README.md"
-version = "0.0.3"
+version = "0.0.4"
 description = "A tiny constructor-time dependency inversion toolkit for Python."
 license = "MIT"
+requires-python = ">=3.11,<4.0"
 packages = [{ include = "idunn"}]
 keywords = ["dependency-injection", "inversion-of-control", "ioc", "decorators", "protocols"]
 classifiers = [
@@ -12,10 +13,7 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
-    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 
@@ -25,9 +23,6 @@ Repository = "https://github.com/terracoil/idunn"
 Documentation = "https://github.com/terracoil/idunn/blob/main/docs/README.md"
 Freyja = "https://pypi.org/project/freyja"
 Modgud = "https://pypi.org/project/modgud"
-
-[tool.poetry.dependencies]
-python = ">=3.13.16,<3.14.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=8.0,<10.0"

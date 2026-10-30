@@ -23,6 +23,11 @@ class Wiring:
     self.mapper: InversionMapper = InversionMapper()
     self.resolver: InversionResolver = InversionResolver(self.mapper)
 
+  @property
+  def ports(self) -> frozenset[type[Any]]:
+    """Ports registered in this engine's catalog."""
+    return self.mapper.ports
+
   def register_adapter(self, adapter: type[Any]) -> bool:
     """Register a ``@Adapter`` class into this engine's catalog."""
     return self.mapper.register_adapter(adapter)
@@ -34,11 +39,6 @@ class Wiring:
   def resolve(self, port: type[Any], *, key: str | None = None) -> Any:
     """Resolve a port into an adapter instance for this engine's environment."""
     return self.resolver.resolve(port=port, key=key, environment=self.environment)
-
-  @property
-  def ports(self) -> frozenset[type[Any]]:
-    """Ports registered in this engine's catalog."""
-    return self.mapper.ports
 
 
 class Container:

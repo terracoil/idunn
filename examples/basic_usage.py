@@ -19,7 +19,7 @@ class Feast:
 
   basket: AppleBasketPort  # assigned by @Invert
 
-  @Invert
+  @Invert()
   def __init__(self, basket: AppleBasketPort, other: str) -> None:
     """Keep ``other``; ``self.basket`` is injected and assigned for us."""
     self.other = other

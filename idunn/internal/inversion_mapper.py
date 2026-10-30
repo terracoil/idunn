@@ -35,10 +35,14 @@ class InversionMapper:
     self._selection_cache: dict[tuple[str, RegistrationKey], AdapterMetadata | None] = {}
     self._dirty: bool = False
 
-  @property
-  def ports(self) -> frozenset[type[Any]]:
-    """Registered ports."""
-    return frozenset(self._ports)
+  def bindings(self, *, environment: str) -> tuple[PortBinding, ...]:
+    """Structured snapshot of every port and its adapters for the given environment."""
+    snapshot: list[PortBinding] = []
+    for port in sorted(self._ports, key=QualifiedName.of):
+      adapters = tuple(metadata for metadata in self._adapters if metadata.port is port)
+      selected = self.find(port=port, key=None, environment=environment)
+      snapshot.append(PortBinding(port=port, selected=selected, adapters=adapters))
+    return tuple(snapshot)
 
   def clear(self) -> None:
     """Drop every port, adapter, and cached selection."""
@@ -49,14 +53,29 @@ class InversionMapper:
     self._selection_cache.clear()
     self._dirty = False
 
-  def register_port(self, port: type[Any]) -> bool:
-    """Register a ``@Port`` Protocol; returns whether it was newly added."""
-    if not getattr(port, '__idunn_port__', False):
-      message = f'Port is not marked with @Port: {port.__qualname__}'
-      raise InvalidPortError(message)
-    is_new = port not in self._ports  # capture before add mutates membership
-    self._ports.add(port)
-    return is_new
+  def find(
+    self,
+    *,
+    port: type[Any],
+    key: str | None,
+    environment: str,
+  ) -> AdapterMetadata | None:
+    """Return the active adapter for a port+key in an environment, or ``None``.
+
+    Hot path: after the first lookup per ``(environment, key)`` this is a dict hit;
+    the cache is dropped wholesale whenever the registry mutates (see ``_refresh_cache``).
+    """
+    self._refresh_cache()
+    cache_key = (environment, RegistrationKey(port=port, key=key))
+    if cache_key not in self._selection_cache:
+      candidates = self._active_candidates(port=port, key=key, environment=environment)
+      self._selection_cache[cache_key] = candidates[0] if candidates else None
+    return self._selection_cache[cache_key]
+
+  @property
+  def ports(self) -> frozenset[type[Any]]:
+    """Registered ports."""
+    return frozenset(self._ports)
 
   def register_adapter(self, adapter: type[Any]) -> bool:
     """Register a ``@Adapter``-marked class; returns whether it was newly added."""
@@ -80,24 +99,14 @@ class InversionMapper:
     self._dirty = True
     return True
 
-  def find(
-    self,
-    *,
-    port: type[Any],
-    key: str | None,
-    environment: str,
-  ) -> AdapterMetadata | None:
-    """Return the active adapter for a port+key in an environment, or ``None``.
-
-    Hot path: after the first lookup per ``(environment, key)`` this is a dict hit;
-    the cache is dropped wholesale whenever the registry mutates (see ``_refresh_cache``).
-    """
-    self._refresh_cache()
-    cache_key = (environment, RegistrationKey(port=port, key=key))
-    if cache_key not in self._selection_cache:
-      candidates = self._active_candidates(port=port, key=key, environment=environment)
-      self._selection_cache[cache_key] = candidates[0] if candidates else None
-    return self._selection_cache[cache_key]
+  def register_port(self, port: type[Any]) -> bool:
+    """Register a ``@Port`` Protocol; returns whether it was newly added."""
+    if not getattr(port, '__idunn_port__', False):
+      message = f'Port is not marked with @Port: {port.__qualname__}'
+      raise InvalidPortError(message)
+    is_new = port not in self._ports  # capture before add mutates membership
+    self._ports.add(port)
+    return is_new
 
   def select(self, *, port: type[Any], key: str | None, environment: str) -> AdapterMetadata:
     """Like :meth:`find`, but raise :class:`AdapterNotFoundError` when nothing matches."""
@@ -105,20 +114,6 @@ class InversionMapper:
     if found is None:
       self._raise_adapter_not_found(port=port, key=key, environment=environment)
     return found
-
-  def bindings(self, *, environment: str) -> tuple[PortBinding, ...]:
-    """Structured snapshot of every port and its adapters for the given environment."""
-    snapshot: list[PortBinding] = []
-    for port in sorted(self._ports, key=QualifiedName.of):
-      adapters = tuple(metadata for metadata in self._adapters if metadata.port is port)
-      selected = self.find(port=port, key=None, environment=environment)
-      snapshot.append(PortBinding(port=port, selected=selected, adapters=adapters))
-    return tuple(snapshot)
-
-  def _refresh_cache(self) -> None:
-    if self._dirty:
-      self._selection_cache.clear()
-      self._dirty = False
 
   def _active_candidates(
     self,
@@ -150,3 +145,8 @@ class InversionMapper:
     detail = f' with key {key!r}' if key is not None else ''
     message = f'No active adapter registered for port {port.__qualname__}{detail} {location}.'
     raise AdapterNotFoundError(message)
+
+  def _refresh_cache(self) -> None:
+    if self._dirty:
+      self._selection_cache.clear()
+      self._dirty = False

@@ -13,16 +13,21 @@ class AdapterMetadata:
   """Describes one registered adapter."""
 
   adapter: type[Any]
-  port: type[Any]
-  key: str | None
-  lifecycle: LifecycleEnum
-  envs: frozenset[str] | None
-  order: int
 
-  def is_available_in(self, environment: str) -> bool:
-    """Return whether this adapter is active in an environment."""
-    return self.envs is None or environment in self.envs
+  port: type[Any]
+
+  key: str | None
+
+  lifecycle: LifecycleEnum
+
+  envs: frozenset[str] | None
+
+  order: int
 
   def environment_label(self) -> str:
     """Return a readable environment label."""
     return ','.join(sorted(self.envs)) if self.envs is not None else '*'
+
+  def is_available_in(self, environment: str) -> bool:
+    """Return whether this adapter is active in an environment."""
+    return self.envs is None or environment in self.envs

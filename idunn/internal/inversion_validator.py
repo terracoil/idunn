@@ -25,6 +25,16 @@ class InversionValidator:
       message = f'Adapter port is not marked with @Port: {port.__qualname__}'
       raise InvalidPortError(message)
 
+  @staticmethod
+  def validate_instance(*, port: type[Any], adapter: type[Any], instance: Any) -> None:
+    """Reject an instance that does not structurally satisfy its port Protocol."""
+    if not isinstance(instance, port):
+      message = (
+        f'Adapter {adapter.__qualname__} does not satisfy port {port.__qualname__}. '
+        'Implement the Protocol structurally or inherit from the port explicitly.'
+      )
+      raise InvalidAdapterError(message)
+
   @classmethod
   def validate_registration(
     cls,
@@ -46,16 +56,6 @@ class InversionValidator:
           f'{metadata.adapter.__qualname__}.'
         )
         raise InvalidAdapterError(message)
-
-  @staticmethod
-  def validate_instance(*, port: type[Any], adapter: type[Any], instance: Any) -> None:
-    """Reject an instance that does not structurally satisfy its port Protocol."""
-    if not isinstance(instance, port):
-      message = (
-        f'Adapter {adapter.__qualname__} does not satisfy port {port.__qualname__}. '
-        'Implement the Protocol structurally or inherit from the port explicitly.'
-      )
-      raise InvalidAdapterError(message)
 
   @staticmethod
   def _environments_overlap(

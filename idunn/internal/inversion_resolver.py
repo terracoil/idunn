@@ -41,28 +41,6 @@ class InversionResolver:
     """Resolve a port into an adapter instance for the active environment."""
     return self._resolve(port=port, key=key, environment=environment, stack=())
 
-  def _resolve(
-    self,
-    *,
-    port: type[Any],
-    key: str | None,
-    environment: str,
-    stack: tuple[type[Any], ...],
-  ) -> Any:
-    if not getattr(port, '__idunn_port__', False):
-      message = f'Cannot resolve a class that is not marked with @Port: {port.__qualname__}'
-      raise InvalidPortError(message)
-    metadata = self._mapper.select(port=port, key=key, environment=environment)
-    if metadata.adapter in stack:
-      cycle = ' -> '.join(item.__qualname__ for item in (*stack, metadata.adapter))
-      raise InjectionCycleError(f'Constructor injection cycle detected: {cycle}')
-    cached = self._instances.get(metadata.adapter, self._MISSING)
-    return (
-      cached
-      if cached is not self._MISSING
-      else self._build(metadata=metadata, port=port, environment=environment, stack=stack)
-    )
-
   def _build(
     self,
     *,
@@ -102,6 +80,38 @@ class InversionResolver:
       )
     return adapter(**kwargs)
 
+  def _handle_missing_annotation(
+    self,
+    *,
+    adapter: type[Any],
+    parameter: inspect.Parameter,
+  ) -> None:
+    if parameter.default is inspect.Signature.empty:
+      message = f'Missing constructor type hint for {adapter.__qualname__}.{parameter.name}'
+      raise MissingTypeHintError(message)
+
+  def _inject_port_argument(
+    self,
+    *,
+    parameter: inspect.Parameter,
+    port: type[Any],
+    optional: bool,
+    kwargs: dict[str, Any],
+    environment: str,
+    stack: tuple[type[Any], ...],
+  ) -> None:
+    # A `Port | None` param, or any @Port param with a default, tolerates a missing adapter.
+    has_default = parameter.default is not inspect.Signature.empty
+    absent = (optional or has_default) and self._mapper.find(
+      port=port, key=None, environment=environment
+    ) is None
+    if absent and not has_default:
+      kwargs[parameter.name] = None  # optional, no default → fall back to None
+    elif not absent:
+      kwargs[parameter.name] = self._resolve(
+        port=port, key=None, environment=environment, stack=stack
+      )
+
   def _populate_constructor_argument(
     self,
     *,
@@ -134,35 +144,24 @@ class InversionResolver:
       )
       raise MissingTypeHintError(message)
 
-  def _inject_port_argument(
+  def _resolve(
     self,
     *,
-    parameter: inspect.Parameter,
     port: type[Any],
-    optional: bool,
-    kwargs: dict[str, Any],
+    key: str | None,
     environment: str,
     stack: tuple[type[Any], ...],
-  ) -> None:
-    # A `Port | None` param, or any @Port param with a default, tolerates a missing adapter.
-    has_default = parameter.default is not inspect.Signature.empty
-    absent = (optional or has_default) and self._mapper.find(
-      port=port, key=None, environment=environment
-    ) is None
-    if absent and not has_default:
-      kwargs[parameter.name] = None  # optional, no default → fall back to None
-    elif not absent:
-      kwargs[parameter.name] = self._resolve(
-        port=port, key=None, environment=environment, stack=stack
-      )
-    # absent with a default: leave it out so the constructor's own default applies
-
-  def _handle_missing_annotation(
-    self,
-    *,
-    adapter: type[Any],
-    parameter: inspect.Parameter,
-  ) -> None:
-    if parameter.default is inspect.Signature.empty:
-      message = f'Missing constructor type hint for {adapter.__qualname__}.{parameter.name}'
-      raise MissingTypeHintError(message)
+  ) -> Any:
+    if not getattr(port, '__idunn_port__', False):
+      message = f'Cannot resolve a class that is not marked with @Port: {port.__qualname__}'
+      raise InvalidPortError(message)
+    metadata = self._mapper.select(port=port, key=key, environment=environment)
+    if metadata.adapter in stack:
+      cycle = ' -> '.join(item.__qualname__ for item in (*stack, metadata.adapter))
+      raise InjectionCycleError(f'Constructor injection cycle detected: {cycle}')
+    cached = self._instances.get(metadata.adapter, self._MISSING)
+    return (
+      cached
+      if cached is not self._MISSING
+      else self._build(metadata=metadata, port=port, environment=environment, stack=stack)
+    )

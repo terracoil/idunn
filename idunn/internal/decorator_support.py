@@ -10,6 +10,26 @@ class DecoratorSupport:
   """Support logic for decorator functions."""
 
   @staticmethod
+  def extract_port_parameters(
+    hints: Mapping[str, Any],
+  ) -> tuple[dict[str, type[Any]], set[str]]:
+    """Split a ``name -> annotation`` mapping into ``(ports, optional_names)``.
+
+    ``ports`` maps each ``@Port``-typed parameter name to its port; ``optional_names``
+    holds the subset whose annotation is ``Port | None``. The synthetic ``'return'``
+    key and every non-port annotation are skipped.
+    """
+    ports: dict[str, type[Any]] = {}
+    optional_names: set[str] = set()
+    for name, annotation in hints.items():
+      port, is_optional = DecoratorSupport.port_from_annotation(annotation)
+      if name != 'return' and port is not None:
+        ports[name] = port
+        if is_optional:
+          optional_names.add(name)
+    return (ports, optional_names)
+
+  @staticmethod
   def normalize_envs(envs: Iterable[str] | str | None) -> frozenset[str] | None:
     """Normalize decorator environment names."""
     if envs is None:
@@ -37,23 +57,3 @@ class DecoratorSupport:
     else:
       result = (None, False)
     return result
-
-  @staticmethod
-  def extract_port_parameters(
-    hints: Mapping[str, Any],
-  ) -> tuple[dict[str, type[Any]], set[str]]:
-    """Split a ``name -> annotation`` mapping into ``(ports, optional_names)``.
-
-    ``ports`` maps each ``@Port``-typed parameter name to its port; ``optional_names``
-    holds the subset whose annotation is ``Port | None``. The synthetic ``'return'``
-    key and every non-port annotation are skipped.
-    """
-    ports: dict[str, type[Any]] = {}
-    optional_names: set[str] = set()
-    for name, annotation in hints.items():
-      port, is_optional = DecoratorSupport.port_from_annotation(annotation)
-      if name != 'return' and port is not None:
-        ports[name] = port
-        if is_optional:
-          optional_names.add(name)
-    return (ports, optional_names)

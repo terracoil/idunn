@@ -16,6 +16,7 @@ from .domain import (
   InvalidPortError,
   LifecycleEnum,
   MissingTypeHintError,
+  ReportMap
 )
 
 __all__ = [
@@ -31,4 +32,5 @@ __all__ = [
   'LifecycleEnum',
   'MissingTypeHintError',
   'Port',
+  'ReportMap'
 ]

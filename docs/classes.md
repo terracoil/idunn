@@ -42,27 +42,29 @@
     • spot-check the Examples section against examples/basic_usage.py specifically;
       it drifts most often (new demo classes get added there first).
 
-  STEP 6 — Preserve the two legends and the "Reading the catalog" closing notes
+  STEP 6 — Keep the `---` + apple-image separator between every `##` section and no emoji
+    in headings. Preserve the two legends and the "Reading the catalog" closing notes
     (refresh their wording if the splittable/reusable story actually changed), and
     KEEP THIS COMMENT BLOCK intact at the top so the next update is just as cheap.
 
   SOURCES OF TRUTH to verify against:
-    idunn/__init__.py · idunn/app/decorators.py · idunn/app/idunn.py ·
+    idunn/__init__.py · idunn/app/port.py · idunn/app/adapter.py · idunn/app/invert.py ·
+    idunn/app/idunn.py ·
     idunn/domain/* · idunn/internal/* · idunn/util/* · examples/basic_usage.py
 ═══════════════════════════════════════════════════════════════════════════════
 -->
 
-# 🍎 Idunn — Class & File Catalog
+# Idunn Class and File Catalog
 
 A map of every class defined in the live `idunn/` package and the runnable `examples/`. Use it to
 tell at a glance what is part of the public contract, what is plumbing, and what could be tightened.
-The package is split into four layers — `app/`, `domain/`, `internal/`, `util/` — and the import
+The package is split into four layers, `app/`, `domain/`, `internal/`, and `util/`, and the import
 directions between them are enforced by `tests/test_architecture.py`.
 
 > *This file is self-maintaining: say "update classes.md" and Claude re-scans the source and
 > regenerates it from the recipe embedded at the top.*
 
-## 🔑 Legend
+## Legend
 
 | Mark | Audience — *who is meant to see it* |
 |------|-------------------------------------|
@@ -82,34 +84,48 @@ directions between them are enforced by `tests/test_architecture.py`.
 
 ---
 
-## 📦 Public API surface — `idunn/__init__.py`
+![Idunn](https://github.com/terracoil/idunn/raw/master/docs/images/idunn-apple-square-50.png)
 
-`__init__.py` is the barrel that re-exports the public names in its `__all__` — the three decorators
+## Public API surface: `idunn/__init__.py`
+
+`__init__.py` is the barrel that re-exports the public names in its `__all__`: the three decorators
 (`Port`, `Adapter`, `Invert`), the `Idunn` facade, `LifecycleEnum`, and the full `IdunnError`
-hierarchy. It contains no logic of its own — 🟢 Public, 📦 Passive. The hidden plumbing it does
+hierarchy. It contains no logic of its own (🟢 Public, 📦 Passive). The hidden plumbing it does
 **not** export: `InversionMapper`, `InversionResolver`, `InversionValidator`, `AutoDiscovery`,
 `DecoratorSupport`, `MetaSingleton`, `Environment`, and the `PortBinding` snapshot type.
 
-## ⚙️ Decorators — `app/decorators.py`
+---
+
+![Idunn](https://github.com/terracoil/idunn/raw/master/docs/images/idunn-apple-square-50.png)
+
+## Decorators: `app/port.py`, `app/adapter.py`, `app/invert.py`
 
 | Class / Symbol | Nature | Purpose | Audience | Splittable? | Generic utility? |
 |----------------|--------|---------|----------|-------------|------------------|
-| `Port` | ⚙️ Active | Marks a `typing.Protocol` as an injectable port: validates it really is a Protocol, sets `__idunn_port__`, and makes it `runtime_checkable`. | 🟢 Public | — | — |
-| `Adapter` | ⚙️ Active | Decorator factory that declares a class as an adapter for a port, capturing `key`/`lifecycle`/`envs` into an `AdapterDeclaration`. Unkeyed adapters answer unkeyed resolution; keyed adapters are opt-in. Constructs nothing. | 🟢 Public | — | — |
-| `Invert` | ⚙️ Active | Wraps a *consumer's* `__init__`: every `@Port`-typed parameter is resolved via the `Idunn()` facade at construction time and assigned to `self.<name>` (caller args override). Supports `keys=`, an explicit `{param: Port}` map, and **optional** deps (`Port \| None` or a defaulted param → default/`None` when no adapter). Delegates annotation→port resolution to `DecoratorSupport.port_from_annotation`. | 🟢 Public | — | — |
+| `Port` (`port.py`) | ⚙️ Active | Class-based decorator applied bare: `__new__` validates the target really is a Protocol, sets `__idunn_port__`, makes it `runtime_checkable`, and returns the Protocol itself (no `Port` instance ever exists). | 🟢 Public | — | — |
+| `Adapter` (`adapter.py`) | ⚙️ Active | Class-based decorator applied with arguments: `__init__` validates the port and freezes `key`/`lifecycle`/`envs` into an `AdapterDeclaration`; `__call__` stamps it onto the class. Unkeyed adapters answer unkeyed resolution; keyed adapters are opt-in. Constructs nothing. | 🟢 Public | — | — |
+| `Invert` (`invert.py`) | ⚙️ Active | Class-based decorator applied with parentheses (`@Invert()`); `__init__` captures `keys=` / an explicit `{param: Port}` map, `__call__` wraps a *consumer's* `__init__`: every `@Port`-typed parameter is resolved via the `Idunn()` facade at construction time and assigned to `self.<name>` (caller args override). Supports **optional** deps (`Port \| None` or a defaulted param → default/`None` when no adapter). Delegates annotation→port resolution to `DecoratorSupport.port_from_annotation`. | 🟢 Public | — | — |
 
-## 🧱 Definitions & metadata — `domain/`
+---
+
+![Idunn](https://github.com/terracoil/idunn/raw/master/docs/images/idunn-apple-square-50.png)
+
+## Definitions and metadata: `domain/`
 
 | File | Class | Nature | Purpose | Audience | Splittable? | Generic utility? |
 |------|-------|--------|---------|----------|-------------|------------------|
 | `lifecycle_enum.py` | `LifecycleEnum` | 📦 Passive | `StrEnum` of adapter lifecycles: `SINGLETON`, `TRANSIENT`. Passed by users to `@Adapter`. | 🟢 Public | — | — |
 | `registration_key.py` | `RegistrationKey` | 📦 Passive | Frozen `(port, key)` pair used to group adapter bindings and as the `InversionMapper` selection-cache key. No longer leaks to users (the facade exposes no `adapters` map). | 🔴 Hidden | — | ✅ Minor — a generic frozen composite key. |
-| `report.py` | `ReportMap` | 📦 Passive | `TypedDict` returned by `autodiscover`: module-name and qualified-class-name string tuples (`root_package`, `imported_*_modules`, `imported_modules`, `registered_ports`, `registered_adapters`). A plain dict, no `Any`. | 🟢 Public | — | — |
+| `report.py` | `ReportMap` | 📦 Passive | `TypedDict` returned by `autodiscover` and `bootstrap`: module-name and qualified-class-name string tuples (`root_package`, `imported_*_modules`, `imported_modules`, `registered_ports`, `registered_adapters`). A plain dict, no `Any`. | 🟢 Public | — | — |
 | `adapter_declaration.py` | `AdapterDeclaration` | 📦 Passive | Frozen carrier of the config captured by `@Adapter` (`port`/`key`/`lifecycle`/`envs`); the only consumer is `InversionMapper` at registration time. | 🔴 Hidden | — | — |
 | `adapter_metadata.py` | `AdapterMetadata` | 📦 Passive *(with helpers)* | Frozen record of one *registered* adapter, plus `is_available_in()` and `environment_label()`. Surfaced read-only inside `PortBinding`. | 🔴 Hidden | — | — |
 | `port_binding.py` | `PortBinding` | 📦 Passive | Frozen snapshot of one port: its `selected` adapter (for an environment) and all its `adapters`. Built by `InversionMapper.bindings()` as the single source of truth behind `describe()`. | 🟡 Mixed | Yes — exported from `domain` but not from top-level `idunn`; could become a public introspection type. | — |
 
-## 🚨 Exceptions — `domain/errors.py`
+---
+
+![Idunn](https://github.com/terracoil/idunn/raw/master/docs/images/idunn-apple-square-50.png)
+
+## Exceptions: `domain/errors.py`
 
 All are 🟢 Public, 📦 Passive — users catch them. `IdunnError` is the shared base.
 
@@ -123,11 +139,15 @@ All are 🟢 Public, 📦 Passive — users catch them. `IdunnError` is the shar
 | `MissingTypeHintError` | Constructor injection needs a type hint that is missing (or a non-port param with no default). |
 | `InjectionCycleError` | Constructor dependency resolution loops back on itself. |
 
-## 🏗️ Engine & orchestration
+---
+
+![Idunn](https://github.com/terracoil/idunn/raw/master/docs/images/idunn-apple-square-50.png)
+
+## Engine and orchestration
 
 | File | Class | Nature | Purpose | Audience | Splittable? | Generic utility? |
 |------|-------|--------|---------|----------|-------------|------------------|
-| `app/idunn.py` | `Idunn` | ⚙️ Active | Thin **facade** — a process-wide singleton (`metaclass=MetaSingleton`). Public surface is `autodiscover()`, `reset()`, and `describe()`; owns one `InversionMapper` + `InversionResolver` and delegates. `@Invert` reaches resolution via private `_inject` / `_has`. No public `resolve`/`register_*`. | 🟢 Public | — | — |
+| `app/idunn.py` | `Idunn` | ⚙️ Active | Thin **facade** — a process-wide singleton (`metaclass=MetaSingleton`). Public surface is `autodiscover()`, `bootstrap()` (a locked once-per-root `autodiscover` for library entry points), `reset()`, and `describe()`; owns one `InversionMapper` + `InversionResolver` and delegates. `@Invert` reaches resolution via private `_inject` / `_has`. No public `resolve`/`register_*`. | 🟢 Public | — | — |
 | `internal/inversion_mapper.py` | `InversionMapper` | ⚙️ Active | The catalog: registers ports/adapters, selects by key + environment, memoizes a `(environment, RegistrationKey)→AdapterMetadata` cache (invalidated on registration), and emits `PortBinding` snapshots. | 🔴 Hidden | — | — |
 | `internal/inversion_resolver.py` | `InversionResolver` | ⚙️ Active | The construction engine: recursive constructor-time resolution, in-progress cycle stack, and the `SINGLETON` instance cache. Asks `InversionMapper` for selections; honors optional (`Port \| None` / defaulted) constructor params via `DecoratorSupport.port_from_annotation`. | 🔴 Hidden | — | — |
 | `internal/inversion_validator.py` | `InversionValidator` | ⚙️ Active *(stateless)* | Stateless checks: adapter-class validity, duplicate registration in overlapping envs, and instance-satisfies-port. Called by mapper + resolver; raises `IdunnError`s. | 🔴 Hidden | — | — |
@@ -136,11 +156,15 @@ All are 🟢 Public, 📦 Passive — users catch them. `IdunnError` is the shar
 | `internal/auto_discovery.py` | `AutoDiscovery` | ⚙️ Active | Imports the *bounded* set of port/adapter modules (names containing `port`/`ports`/`adapter`/`adapters`), registers the decorated classes into an `InversionMapper`, and returns a `ReportMap`. Reached via `Idunn().autodiscover`. | 🔴 Hidden | — | ✅ The module-scan helpers (`_candidate_module_names*`, `_module_name_for_file`, `_has_named_part`) are a reusable "find dotted modules under a package" utility. |
 | `internal/decorator_support.py` | `DecoratorSupport` | ⚙️ Active | Helpers for the decorators: `normalize_envs()` (collapse `envs` into a normalized `frozenset`) and `port_from_annotation()` (resolve an annotation to `(port, optional)`, unwrapping `Optional`). | 🔴 Hidden | — | Minor — tied to Idunn rules. |
 
-## 📚 Examples — `examples/`
+---
+
+![Idunn](https://github.com/terracoil/idunn/raw/master/docs/images/idunn-apple-square-50.png)
+
+## Examples: `examples/`
 
 Teaching code: 🟢 Public as *documentation*, but not part of the importable library. `examples/` is a
 **discoverable package** run with `python -m examples.basic_usage`; it shows the real workflow —
-`Idunn().autodiscover("examples.orchard")` then `@Invert`-root construction — with imports only from
+`Idunn().autodiscover('examples.orchard')` then `@Invert()`-root construction, with imports only from
 `idunn`. The `examples.orchard` subpackage holds the discoverable `ports`/`adapters`.
 
 | File | Class | Nature | Purpose |
@@ -152,7 +176,11 @@ Teaching code: 🟢 Public as *documentation*, but not part of the importable li
 | `basic_usage.py` | `Picnic` | ⚙️ Active | `@Invert`-root that opts into the keyed basket with `@Invert(keys={'basket': 'wild'})`. |
 | `basic_usage.py` | `Example` | ⚙️ Active | Bundles the runnable `main()` (`autodiscover` + construct), avoiding loose module-level functions. |
 
-## 🧭 Reading the catalog
+---
+
+![Idunn](https://github.com/terracoil/idunn/raw/master/docs/images/idunn-apple-square-50.png)
+
+## Reading the catalog
 
 - **The public surface is now tight.** Top-level `idunn` exports only the three decorators, `Idunn`,
   `LifecycleEnum`, and the exception hierarchy. The former 🟡 rows (`RegistrationKey`,

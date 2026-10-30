@@ -18,6 +18,19 @@ ALLOWED = {
 class LayerProbe:
   """Resolves each module's layer and the internal layers it imports from."""
 
+  @classmethod
+  def imported_layers(cls, path: Path) -> set[tuple[str, str]]:
+    """Return the internal (layer, dotted-module) edges imported by the file."""
+    tree = ast.parse(path.read_text(encoding='utf-8'))
+    package = cls._containing_package(path)
+    edges: set[tuple[str, str]] = set()
+    for node in ast.walk(tree):
+      for dotted in cls._import_targets(node, package):
+        layer = cls._layer_of_dotted(dotted)
+        if layer is not None:
+          edges.add((layer, dotted))
+    return edges
+
   @staticmethod
   def layer_of_path(path: Path) -> str | None:
     """Layer that owns a source file, or None for a root-level module."""
@@ -27,11 +40,6 @@ class LayerProbe:
   @staticmethod
   def _containing_package(path: Path) -> list[str]:
     return list(path.relative_to(PACKAGE_ROOT.parent).with_suffix('').parts[:-1])
-
-  @staticmethod
-  def _layer_of_dotted(dotted: str) -> str | None:
-    parts = dotted.split('.')
-    return parts[1] if parts[0] == 'idunn' and len(parts) >= 2 and parts[1] in LAYERS else None
 
   @staticmethod
   def _import_targets(node: ast.AST, package: list[str]) -> list[str]:
@@ -46,18 +54,10 @@ class LayerProbe:
       targets = ['.'.join([*base, *suffix])]
     return targets
 
-  @classmethod
-  def imported_layers(cls, path: Path) -> set[tuple[str, str]]:
-    """Return the internal (layer, dotted-module) edges imported by the file."""
-    tree = ast.parse(path.read_text(encoding='utf-8'))
-    package = cls._containing_package(path)
-    edges: set[tuple[str, str]] = set()
-    for node in ast.walk(tree):
-      for dotted in cls._import_targets(node, package):
-        layer = cls._layer_of_dotted(dotted)
-        if layer is not None:
-          edges.add((layer, dotted))
-    return edges
+  @staticmethod
+  def _layer_of_dotted(dotted: str) -> str | None:
+    parts = dotted.split('.')
+    return parts[1] if parts[0] == 'idunn' and len(parts) >= 2 and parts[1] in LAYERS else None
 
 
 def test_no_modules_outside_the_four_layers() -> None:

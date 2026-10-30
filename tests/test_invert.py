@@ -29,7 +29,7 @@ class PlainBasket(BasketPort):
 class Consumer:
   basket: BasketPort  # declared for the type checker; assigned by @Invert at runtime
 
-  @Invert
+  @Invert()
   def __init__(self, basket: BasketPort, label: str) -> None:
     self.label = label
 
@@ -53,7 +53,7 @@ class ExplicitConsumer:
 class OptionalConsumer:
   basket: BasketPort | None
 
-  @Invert
+  @Invert()
   def __init__(self, basket: BasketPort | None = None) -> None:
     pass
 
@@ -83,7 +83,7 @@ class BasketService(ServicePort):
 class ServiceConsumer:
   service: ServicePort
 
-  @Invert
+  @Invert()
   def __init__(self, service: ServicePort) -> None:
     pass
 

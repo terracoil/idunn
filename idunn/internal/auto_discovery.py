@@ -18,6 +18,7 @@ class AutoDiscovery:
   """Imports bounded port/adapter modules and registers decorated classes."""
 
   DEFAULT_PORT_PACKAGE_NAMES = frozenset({'port', 'ports'})
+
   DEFAULT_ADAPTER_PACKAGE_NAMES = frozenset({'adapter', 'adapters'})
 
   def autodiscover(
@@ -76,18 +77,6 @@ class AutoDiscovery:
       'registered_adapters': tuple(QualifiedName.of(cls) for cls in registered_adapters),
     }
 
-  def _normalized_names(
-    self,
-    *,
-    names: frozenset[str] | None,
-    fallback: frozenset[str],
-  ) -> frozenset[str]:
-    source = names if names is not None else fallback
-    return frozenset(item.lower() for item in source)
-
-  def _import_root(self, *, root_package: str | ModuleType) -> ModuleType:
-    return importlib.import_module(root_package) if isinstance(root_package, str) else root_package
-
   def _candidate_module_names(
     self,
     *,
@@ -130,19 +119,14 @@ class AutoDiscovery:
           names.append(module_name)
     return tuple(names)
 
-  def _module_name_for_file(
-    self,
-    *,
-    root_module: ModuleType,
-    root_path: Path,
-    python_file: Path,
-  ) -> str:
-    relative_path = python_file.relative_to(root_path)
-    parts = list(relative_path.with_suffix('').parts)
-    if parts[-1] == '__init__':
-      parts = parts[:-1]
-    dotted_suffix = '.'.join(parts)
-    return f'{root_module.__name__}.{dotted_suffix}' if dotted_suffix else root_module.__name__
+  def _decorated_classes(self, *, module: ModuleType, marker: str) -> tuple[type[Any], ...]:
+    # Own-__dict__ check: an adapter subclassing its port *inherits* __idunn_port__,
+    # so getattr would mis-detect adapters as ports. The flag lives on the decorated class only.
+    return tuple(
+      candidate
+      for _, candidate in inspect.getmembers(module, inspect.isclass)
+      if candidate.__module__ == module.__name__ and marker in candidate.__dict__
+    )
 
   def _has_named_part(self, *, module_name: str, package_names: frozenset[str]) -> bool:
     parts = module_name.split('.')
@@ -166,18 +150,31 @@ class AutoDiscovery:
         # non-strict: skip the unimportable module and continue discovery
     return tuple(modules)
 
-  def _register_decorated_ports(
+  def _import_root(self, *, root_package: str | ModuleType) -> ModuleType:
+    return importlib.import_module(root_package) if isinstance(root_package, str) else root_package
+
+  def _module_name_for_file(
     self,
     *,
-    mapper: InversionMapper,
-    modules: tuple[ModuleType, ...],
-  ) -> tuple[type[Any], ...]:
-    registered: list[type[Any]] = []
-    for module in modules:
-      for candidate in self._decorated_classes(module=module, marker='__idunn_port__'):
-        if mapper.register_port(candidate):
-          registered.append(candidate)
-    return tuple(registered)
+    root_module: ModuleType,
+    root_path: Path,
+    python_file: Path,
+  ) -> str:
+    relative_path = python_file.relative_to(root_path)
+    parts = list(relative_path.with_suffix('').parts)
+    if parts[-1] == '__init__':
+      parts = parts[:-1]
+    dotted_suffix = '.'.join(parts)
+    return f'{root_module.__name__}.{dotted_suffix}' if dotted_suffix else root_module.__name__
+
+  def _normalized_names(
+    self,
+    *,
+    names: frozenset[str] | None,
+    fallback: frozenset[str],
+  ) -> frozenset[str]:
+    source = names if names is not None else fallback
+    return frozenset(item.lower() for item in source)
 
   def _register_decorated_adapters(
     self,
@@ -192,11 +189,15 @@ class AutoDiscovery:
           registered.append(candidate)
     return tuple(registered)
 
-  def _decorated_classes(self, *, module: ModuleType, marker: str) -> tuple[type[Any], ...]:
-    # Own-__dict__ check: an adapter subclassing its port *inherits* __idunn_port__,
-    # so getattr would mis-detect adapters as ports. The flag lives on the decorated class only.
-    return tuple(
-      candidate
-      for _, candidate in inspect.getmembers(module, inspect.isclass)
-      if candidate.__module__ == module.__name__ and marker in candidate.__dict__
-    )
+  def _register_decorated_ports(
+    self,
+    *,
+    mapper: InversionMapper,
+    modules: tuple[ModuleType, ...],
+  ) -> tuple[type[Any], ...]:
+    registered: list[type[Any]] = []
+    for module in modules:
+      for candidate in self._decorated_classes(module=module, marker='__idunn_port__'):
+        if mapper.register_port(candidate):
+          registered.append(candidate)
+    return tuple(registered)
