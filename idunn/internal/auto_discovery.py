@@ -12,6 +12,7 @@ from idunn.domain import DiscoveryError, ReportMap
 from idunn.util import QualifiedName
 
 from .inversion_mapper import InversionMapper
+from .port_registry import PortRegistry
 
 
 class AutoDiscovery:
@@ -119,13 +120,20 @@ class AutoDiscovery:
           names.append(module_name)
     return tuple(names)
 
-  def _decorated_classes(self, *, module: ModuleType, marker: str) -> tuple[type[Any], ...]:
-    # Own-__dict__ check: an adapter subclassing its port *inherits* __idunn_port__,
-    # so getattr would mis-detect adapters as ports. The flag lives on the decorated class only.
+  def _decorated_adapters(self, *, module: ModuleType) -> tuple[type[Any], ...]:
+    # Own-__dict__ check: a subclass of a decorated adapter *inherits* __idunn_adapter__,
+    # so getattr would mis-detect it. The flag counts only on the decorated class itself.
     return tuple(
       candidate
-      for _, candidate in inspect.getmembers(module, inspect.isclass)
-      if candidate.__module__ == module.__name__ and marker in candidate.__dict__
+      for candidate in self._module_classes(module=module)
+      if '__idunn_adapter__' in candidate.__dict__
+    )
+
+  def _decorated_ports(self, *, module: ModuleType) -> tuple[type[Any], ...]:
+    return tuple(
+      candidate
+      for candidate in self._module_classes(module=module)
+      if PortRegistry.is_port(candidate)
     )
 
   def _has_named_part(self, *, module_name: str, package_names: frozenset[str]) -> bool:
@@ -152,6 +160,13 @@ class AutoDiscovery:
 
   def _import_root(self, *, root_package: str | ModuleType) -> ModuleType:
     return importlib.import_module(root_package) if isinstance(root_package, str) else root_package
+
+  def _module_classes(self, *, module: ModuleType) -> tuple[type[Any], ...]:
+    return tuple(
+      candidate
+      for _, candidate in inspect.getmembers(module, inspect.isclass)
+      if candidate.__module__ == module.__name__
+    )
 
   def _module_name_for_file(
     self,
@@ -184,7 +199,7 @@ class AutoDiscovery:
   ) -> tuple[type[Any], ...]:
     registered: list[type[Any]] = []
     for module in modules:
-      for candidate in self._decorated_classes(module=module, marker='__idunn_adapter__'):
+      for candidate in self._decorated_adapters(module=module):
         if mapper.register_adapter(candidate):
           registered.append(candidate)
     return tuple(registered)
@@ -197,7 +212,7 @@ class AutoDiscovery:
   ) -> tuple[type[Any], ...]:
     registered: list[type[Any]] = []
     for module in modules:
-      for candidate in self._decorated_classes(module=module, marker='__idunn_port__'):
+      for candidate in self._decorated_ports(module=module):
         if mapper.register_port(candidate):
           registered.append(candidate)
     return tuple(registered)

@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from typing import Any, TypeVar
 
 from idunn.domain import AdapterDeclaration, InvalidAdapterError, InvalidPortError, LifecycleEnum
-from idunn.internal import DecoratorSupport
+from idunn.internal import DecoratorSupport, PortRegistry
 
 T = TypeVar('T', bound=type[Any])
 
@@ -47,7 +47,7 @@ class Adapter:
     envs: Iterable[str] | str | None = None,
   ) -> None:
     """Validate ``port`` and capture the normalized declaration this decorator will apply."""
-    if not getattr(port, '__idunn_port__', False):
+    if not PortRegistry.is_port(port):
       message = f'Adapter port is not marked with @Port: {port.__qualname__}'
       raise InvalidPortError(message)
     self._declaration: AdapterDeclaration = AdapterDeclaration(

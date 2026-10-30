@@ -204,7 +204,8 @@ Idunn().autodiscover(
   path does not work.
 - **`ReportMap`.** Both calls return a `TypedDict` of strings: `root_package`,
   `imported_port_modules`, `imported_adapter_modules`, `imported_modules`, `registered_ports`, and
-  `registered_adapters`. Class names are fully qualified.
+  `registered_adapters`. Class names are fully qualified. Import it as `from idunn import ReportMap`
+  when you annotate a stored report.
 - **Multiple roots accumulate.** Registration is idempotent and the catalog is shared, so call
   discovery once per package that contributes adapters.
 - **`bootstrap` caches per root.** The first call for a root discovers with the options given. Later

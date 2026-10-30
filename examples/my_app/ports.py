@@ -1,4 +1,4 @@
-"""Ports for the orchard example (discovered because the module is named ``ports``)."""
+"""Ports for ``my_app`` (discovered because the module is named ``ports``)."""
 
 from typing import Protocol
 

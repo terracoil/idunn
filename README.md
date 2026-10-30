@@ -33,6 +33,7 @@ from idunn import Port, Adapter, Invert  # the three decorators
 from idunn import Idunn  # the container: autodiscover() or bootstrap(), once
 from idunn import LifecycleEnum  # TRANSIENT (default) or SINGLETON, passed to @Adapter
 from idunn import IdunnError  # base of the exception hierarchy
+from idunn import ReportMap  # the TypedDict autodiscover() and bootstrap() return
 ```
 
 That is the entire surface. Registration, selection, and construction happen behind the container.
@@ -79,7 +80,9 @@ from idunn import Idunn
 
 class Engine:
   """Example engine class"""
+
   ...
+
 
 class MyLib:
   """Public entry point; wires my_lib on first use."""
@@ -110,6 +113,7 @@ my_app/
   adapters.py
 ```
 
+See examples in [`/examples/my_app`](./examples/my_app/)
 ```python
 # my_app/ports.py
 from typing import Protocol
@@ -143,6 +147,7 @@ from idunn import Idunn, Invert
 
 from .ports import AppleBasketPort
 
+
 class Feast:
   basket: AppleBasketPort  # declared for the type checker; @Invert assigns it
 
@@ -154,11 +159,12 @@ class Feast:
     return f'{self.host}: {self.basket.take_apple()}'
 
 
-Idunn().autodiscover('my_app')
-print(Feast(host='Bragi').serve())  # Bragi: youth restored
+if __name__ == '__main__':
+  Idunn().autodiscover('my_app')
+  print(Feast(host='Bragi').serve())  # Bragi: youth restored
 ```
 
-A runnable version lives in `examples/`: `python -m examples.basic_usage`.
+Run the example with `python -m examples.my_app.main`; there the discovery root is `'examples.my_app'`.
 
 ---
 
@@ -166,33 +172,27 @@ A runnable version lives in `examples/`: `python -m examples.basic_usage`.
 
 ## The three decorators
 
-### `@Port`
+* ### `@Port`
+  Marks a `typing.Protocol` as a contract. Anything that is not a Protocol raises `InvalidPortError`.
+  The Protocol is made `runtime_checkable` so Idunn can confirm an adapter satisfies it.
 
-Marks a `typing.Protocol` as a contract. Anything that is not a Protocol raises `InvalidPortError`.
-The Protocol is made `runtime_checkable` so Idunn can confirm an adapter satisfies it.
+* ### `@Adapter(port, lifecycle=...)`
+  Declares a concrete class as the implementation of `port`. It attaches metadata and constructs
+  nothing. The class must satisfy the Protocol, by inheritance (recommended) or structurally; Idunn
+  never patches it to fit. One adapter per port is the normal case. `lifecycle` is `TRANSIENT` by
+  default (a new instance per resolve) or `SINGLETON` (built once, reused).
+  <br/><br/>Selecting between several adapters with `key=` and `envs=` is covered in
+  [Advanced](./docs/ADVANCED.md#choosing-between-adapters).
 
-### `@Adapter(port, lifecycle=...)`
-
-Declares a concrete class as the implementation of `port`. It attaches metadata and constructs
-nothing. The class must satisfy the Protocol, by inheritance (recommended) or structurally; Idunn
-never patches it to fit. One adapter per port is the normal case. `lifecycle` is `TRANSIENT` by
-default (a new instance per resolve) or `SINGLETON` (built once, reused).
-
-Selecting between several adapters with `key=` and `envs=` is covered in
-[Advanced](./docs/ADVANCED.md#choosing-between-adapters).
-
-### `@Invert()`
-
-Wraps a consumer's `__init__`. Every parameter whose type hint is a `@Port` is resolved when the
-constructor runs, assigned to `self.<name>`, and passed into the body. Three things to know:
-
-- A caller-supplied argument always wins, so `Feast(basket=fake, host='x')` skips injection and keeps
-  the class easy to test.
-- Resolution is recursive: an adapter's own `@Port` constructor parameters are resolved first.
-- Constructing an `@Invert()` object is the only way to start a graph. There is no `resolve()`.
-
-Always apply it with parentheses. Keyed selection, explicit parameter maps, and optional dependencies
-are in [Advanced](./docs/ADVANCED.md#the-invert-contract-in-full).
+* ### `@Invert()`
+  Wraps a consumer's `__init__`. Every parameter whose type hint is a `@Port` is resolved when the
+  constructor runs, assigned to `self.<name>`, and passed into the body. Three things to know:
+  - A caller-supplied argument always wins, so `Feast(basket=fake, host='x')` skips injection and keeps
+    the class easy to test.
+  - Resolution is recursive: an adapter's own `@Port` constructor parameters are resolved first.
+  - Constructing an `@Invert()` object is the only way to start a graph. There is no `resolve()`. 
+    Always apply it with parentheses. Keyed selection, explicit parameter maps, and optional dependencies
+   are in [Advanced](./docs/ADVANCED.md#the-invert-contract-in-full).
 
 ---
 
@@ -200,7 +200,7 @@ are in [Advanced](./docs/ADVANCED.md#the-invert-contract-in-full).
 
 ## What gets registered
 
-Only classes wearing the badge. A class that satisfies a port but lacks `@Adapter(...)` is invisible
+Only classes wearing the decorator. A class that satisfies a port but lacks `@Adapter(...)` is invisible
 to discovery, and a module outside the `ports`/`adapters` naming rule is never imported. Looking the
 part is not the same as wearing the badge.
 
@@ -217,8 +217,8 @@ poetry run ruff format --check . && poetry run ruff check .
 poetry run mypy
 ```
 
-CI (`.github/workflows/ci.yml`) runs the same checks. Idunn requires Python 3.13
-(`>=3.13.16,<3.14.0`, pinned in `pyproject.toml`).
+CI (`.github/workflows/ci.yml`) runs the same checks on Python 3.11, 3.12, and 3.13.16. Idunn supports
+Python 3.11 and newer (`requires-python = ">=3.11,<4.0"`) and is developed on 3.13.16.
 
 ---
 

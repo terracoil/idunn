@@ -62,7 +62,7 @@ class Idunn(metaclass=MetaSingleton):
     entry point (a decorator, a classmethod, a ``__new__``) and the graph is wired on
     first use rather than at import. The first call for a root performs the discovery
     with the options given; later calls for the same root return the cached
-    :class:`~idunn.domain.ReportMap` without rescanning, and their options are ignored.
+    :class:`~idunn.ReportMap` without rescanning, and their options are ignored.
     Distinct roots are discovered independently. Thread-safe and re-entrant: a bootstrap
     triggered by a module that an in-progress discovery is importing does not deadlock.
     ``reset()`` forgets the cache along with the registrations.

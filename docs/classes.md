@@ -39,7 +39,7 @@
     • if __all__ changed, re-derive every 🟢/🟡/🔴.
     • RE-READ the decorator signatures so Purpose text matches current params —
       e.g. @Adapter currently takes key / lifecycle / envs and has NO `default`.
-    • spot-check the Examples section against examples/basic_usage.py specifically;
+    • spot-check the Examples section against examples/my_app/ specifically;
       it drifts most often (new demo classes get added there first).
 
   STEP 6 — Keep the `---` + apple-image separator between every `##` section and no emoji
@@ -50,7 +50,7 @@
   SOURCES OF TRUTH to verify against:
     idunn/__init__.py · idunn/app/port.py · idunn/app/adapter.py · idunn/app/invert.py ·
     idunn/app/idunn.py ·
-    idunn/domain/* · idunn/internal/* · idunn/util/* · examples/basic_usage.py
+    idunn/domain/* · idunn/internal/* · idunn/util/* · examples/my_app/*
 ═══════════════════════════════════════════════════════════════════════════════
 -->
 
@@ -89,10 +89,11 @@ directions between them are enforced by `tests/test_architecture.py`.
 ## Public API surface: `idunn/__init__.py`
 
 `__init__.py` is the barrel that re-exports the public names in its `__all__`: the three decorators
-(`Port`, `Adapter`, `Invert`), the `Idunn` facade, `LifecycleEnum`, and the full `IdunnError`
-hierarchy. It contains no logic of its own (🟢 Public, 📦 Passive). The hidden plumbing it does
-**not** export: `InversionMapper`, `InversionResolver`, `InversionValidator`, `AutoDiscovery`,
-`DecoratorSupport`, `MetaSingleton`, `Environment`, and the `PortBinding` snapshot type.
+(`Port`, `Adapter`, `Invert`), the `Idunn` facade, `LifecycleEnum`, the `ReportMap` TypedDict, and
+the full `IdunnError` hierarchy. It contains no logic of its own (🟢 Public, 📦 Passive). The hidden
+plumbing it does **not** export: `InversionMapper`, `InversionResolver`, `InversionValidator`,
+`AutoDiscovery`, `DecoratorSupport`, `PortRegistry`, `MetaSingleton`, `Environment`, and the
+`PortBinding` snapshot type.
 
 ---
 
@@ -102,7 +103,7 @@ hierarchy. It contains no logic of its own (🟢 Public, 📦 Passive). The hidd
 
 | Class / Symbol | Nature | Purpose | Audience | Splittable? | Generic utility? |
 |----------------|--------|---------|----------|-------------|------------------|
-| `Port` (`port.py`) | ⚙️ Active | Class-based decorator applied bare: `__new__` validates the target really is a Protocol, sets `__idunn_port__`, makes it `runtime_checkable`, and returns the Protocol itself (no `Port` instance ever exists). | 🟢 Public | — | — |
+| `Port` (`port.py`) | ⚙️ Active | Class-based decorator applied bare: `__new__` validates the target really is a Protocol, records it in `PortRegistry` (only that exact class is a port), makes it `runtime_checkable`, and returns the Protocol itself (no `Port` instance ever exists). | 🟢 Public | — | — |
 | `Adapter` (`adapter.py`) | ⚙️ Active | Class-based decorator applied with arguments: `__init__` validates the port and freezes `key`/`lifecycle`/`envs` into an `AdapterDeclaration`; `__call__` stamps it onto the class. Unkeyed adapters answer unkeyed resolution; keyed adapters are opt-in. Constructs nothing. | 🟢 Public | — | — |
 | `Invert` (`invert.py`) | ⚙️ Active | Class-based decorator applied with parentheses (`@Invert()`); `__init__` captures `keys=` / an explicit `{param: Port}` map, `__call__` wraps a *consumer's* `__init__`: every `@Port`-typed parameter is resolved via the `Idunn()` facade at construction time and assigned to `self.<name>` (caller args override). Supports **optional** deps (`Port \| None` or a defaulted param → default/`None` when no adapter). Delegates annotation→port resolution to `DecoratorSupport.port_from_annotation`. | 🟢 Public | — | — |
 
@@ -155,6 +156,7 @@ All are 🟢 Public, 📦 Passive — users catch them. `IdunnError` is the shar
 | `util/environment.py` | `Environment` | ⚙️ Active *(value + logic)* | Frozen value object holding a resolved env `name`, plus `current()` (resolve from arg → `IDUNN_ENV` → `local`) and `normalize()` (slugify + validate). Reached via `Idunn().reset(environment=...)`; not exported. | 🔴 Hidden | — | ✅ `normalize()` is a generic slug normalizer. |
 | `internal/auto_discovery.py` | `AutoDiscovery` | ⚙️ Active | Imports the *bounded* set of port/adapter modules (names containing `port`/`ports`/`adapter`/`adapters`), registers the decorated classes into an `InversionMapper`, and returns a `ReportMap`. Reached via `Idunn().autodiscover`. | 🔴 Hidden | — | ✅ The module-scan helpers (`_candidate_module_names*`, `_module_name_for_file`, `_has_named_part`) are a reusable "find dotted modules under a package" utility. |
 | `internal/decorator_support.py` | `DecoratorSupport` | ⚙️ Active | Helpers for the decorators: `normalize_envs()` (collapse `envs` into a normalized `frozenset`) and `port_from_annotation()` (resolve an annotation to `(port, optional)`, unwrapping `Optional`). | 🔴 Hidden | — | Minor — tied to Idunn rules. |
+| `internal/port_registry.py` | `PortRegistry` | ⚙️ Active *(process-wide state)* | `WeakSet` of the Protocols decorated with `@Port`: `mark()` records one, `is_port()` checks exact class identity. Replaces a marker attribute, which Python 3.11 would count as a protocol member and so break structural adapters. Subclasses of a port are not ports. | 🔴 Hidden | — | — |
 
 ---
 
@@ -162,19 +164,17 @@ All are 🟢 Public, 📦 Passive — users catch them. `IdunnError` is the shar
 
 ## Examples: `examples/`
 
-Teaching code: 🟢 Public as *documentation*, but not part of the importable library. `examples/` is a
-**discoverable package** run with `python -m examples.basic_usage`; it shows the real workflow —
-`Idunn().autodiscover('examples.orchard')` then `@Invert()`-root construction, with imports only from
-`idunn`. The `examples.orchard` subpackage holds the discoverable `ports`/`adapters`.
+Teaching code: 🟢 Public as *documentation*, but not part of the importable library. `examples/my_app`
+is the README's `my_app` layout as a **discoverable package**, run with
+`python -m examples.my_app.main`. It shows the real workflow — `Idunn().autodiscover('examples.my_app')`
+under `main.py`'s `if __name__ == '__main__':` guard, then `@Invert()`-root construction — with
+imports only from `idunn`.
 
 | File | Class | Nature | Purpose |
 |------|-------|--------|---------|
-| `orchard/ports.py` | `AppleBasketPort` | 📦 Passive | `@Port` Protocol — contract with a single `take_apple()` method. |
-| `orchard/adapters.py` | `GoldenAppleBasketAdapter` | ⚙️ Active | Unkeyed `@Adapter` (singleton) for `AppleBasketPort`; answers a plain `@Invert`. |
-| `orchard/adapters.py` | `WildAppleBasketAdapter` | ⚙️ Active | Keyed `@Adapter` (`key='wild'`) for `AppleBasketPort`; opt-in, reached only via `@Invert(keys=...)`. |
-| `basic_usage.py` | `Feast` | ⚙️ Active | Plain `@Invert`-root; its *unkeyed* `AppleBasketPort` is injected and assigned to `self.basket` automatically. |
-| `basic_usage.py` | `Picnic` | ⚙️ Active | `@Invert`-root that opts into the keyed basket with `@Invert(keys={'basket': 'wild'})`. |
-| `basic_usage.py` | `Example` | ⚙️ Active | Bundles the runnable `main()` (`autodiscover` + construct), avoiding loose module-level functions. |
+| `my_app/ports.py` | `AppleBasketPort` | 📦 Passive | `@Port` Protocol — contract with a single `take_apple()` method. |
+| `my_app/adapters.py` | `GoldenAppleBasketAdapter` | ⚙️ Active | Unkeyed `@Adapter` (singleton) for `AppleBasketPort`; answers a plain `@Invert`. |
+| `my_app/main.py` | `Feast` | ⚙️ Active | Plain `@Invert`-root; its `AppleBasketPort` is injected and assigned to `self.basket` automatically. |
 
 ---
 
@@ -183,12 +183,12 @@ Teaching code: 🟢 Public as *documentation*, but not part of the importable li
 ## Reading the catalog
 
 - **The public surface is now tight.** Top-level `idunn` exports only the three decorators, `Idunn`,
-  `LifecycleEnum`, and the exception hierarchy. The former 🟡 rows (`RegistrationKey`,
+  `LifecycleEnum`, the `ReportMap` TypedDict, and the exception hierarchy. The former 🟡 rows (`RegistrationKey`,
   `AdapterDeclaration`, `AdapterMetadata`) are now 🔴 plumbing behind the engine. The one remaining
   🟡 row is `PortBinding` — a read-only snapshot type that could graduate to a public introspection
   API if a need appears.
 - **Reusable bits worth extracting.** `MetaSingleton`, `Environment.normalize` (slug normalizer), and
   `AutoDiscovery`'s module-scan helpers are the most project-agnostic code in the package.
 - **Genuinely-hidden classes.** The engine trio (`InversionMapper`, `InversionResolver`,
-  `InversionValidator`) plus `AutoDiscovery`, `DecoratorSupport`, `MetaSingleton`, and `Environment`
-  are never meant to be imported by end users — they sit behind the `Idunn` facade.
+  `InversionValidator`) plus `AutoDiscovery`, `DecoratorSupport`, `PortRegistry`, `MetaSingleton`,
+  and `Environment` are never meant to be imported by end users — they sit behind the `Idunn` facade.

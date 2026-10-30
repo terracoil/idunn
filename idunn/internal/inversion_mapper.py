@@ -16,6 +16,7 @@ from idunn.domain import (
 from idunn.util import QualifiedName
 
 from .inversion_validator import InversionValidator
+from .port_registry import PortRegistry
 
 
 class InversionMapper:
@@ -101,7 +102,7 @@ class InversionMapper:
 
   def register_port(self, port: type[Any]) -> bool:
     """Register a ``@Port`` Protocol; returns whether it was newly added."""
-    if not getattr(port, '__idunn_port__', False):
+    if not PortRegistry.is_port(port):
       message = f'Port is not marked with @Port: {port.__qualname__}'
       raise InvalidPortError(message)
     is_new = port not in self._ports  # capture before add mutates membership

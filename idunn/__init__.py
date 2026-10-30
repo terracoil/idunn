@@ -2,8 +2,9 @@
 
 The entire public surface lives here: the three decorators (:func:`Port`,
 :func:`Adapter`, :func:`Invert`), the :class:`Idunn` container, the
-:class:`LifecycleEnum` you hand to ``@Adapter``, and the :class:`IdunnError`
-exception hierarchy you catch. Everything else is internal plumbing.
+:class:`LifecycleEnum` you hand to ``@Adapter``, the :class:`ReportMap` that ``autodiscover``
+and ``bootstrap`` return, and the :class:`IdunnError` exception hierarchy you catch. Everything
+else is internal plumbing.
 """
 
 from .app import Adapter, Idunn, Invert, Port
@@ -16,7 +17,7 @@ from .domain import (
   InvalidPortError,
   LifecycleEnum,
   MissingTypeHintError,
-  ReportMap
+  ReportMap,
 )
 
 __all__ = [
@@ -32,5 +33,5 @@ __all__ = [
   'LifecycleEnum',
   'MissingTypeHintError',
   'Port',
-  'ReportMap'
+  'ReportMap',
 ]

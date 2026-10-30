@@ -49,6 +49,7 @@ from idunn import Port, Adapter, Invert  # the three decorators: the entire auth
 from idunn import Idunn  # the one container; you touch it once, to discover
 from idunn import LifecycleEnum  # TRANSIENT (default) or SINGLETON, passed to @Adapter
 from idunn import IdunnError  # the base of the exception hierarchy you catch
+from idunn import ReportMap  # the TypedDict autodiscover() and bootstrap() return
 ```
 
 That is the surface area on purpose. There is no registry object to thread through your code, no

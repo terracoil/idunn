@@ -7,6 +7,8 @@ from typing import Any
 
 from idunn.domain import AdapterMetadata, InvalidAdapterError, InvalidPortError
 
+from .port_registry import PortRegistry
+
 
 class InversionValidator:
   """Stateless checks for adapter classes, registrations, and resolved instances.
@@ -21,7 +23,7 @@ class InversionValidator:
     if not inspect.isclass(adapter):
       message = f'Adapter must be a class: {adapter!r}'
       raise InvalidAdapterError(message)
-    if not getattr(port, '__idunn_port__', False):
+    if not PortRegistry.is_port(port):
       message = f'Adapter port is not marked with @Port: {port.__qualname__}'
       raise InvalidPortError(message)
 

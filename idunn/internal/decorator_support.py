@@ -5,6 +5,8 @@ from typing import Any, get_args
 
 from idunn.util import Environment
 
+from .port_registry import PortRegistry
+
 
 class DecoratorSupport:
   """Support logic for decorator functions."""
@@ -48,11 +50,9 @@ class DecoratorSupport:
     args = get_args(annotation)
     non_none = tuple(arg for arg in args if arg is not type(None))
     result: tuple[type[Any] | None, bool]
-    if getattr(annotation, '__idunn_port__', False):
+    if PortRegistry.is_port(annotation):
       result = (annotation, False)
-    elif (
-      type(None) in args and len(non_none) == 1 and getattr(non_none[0], '__idunn_port__', False)
-    ):
+    elif type(None) in args and len(non_none) == 1 and PortRegistry.is_port(non_none[0]):
       result = (non_none[0], True)
     else:
       result = (None, False)

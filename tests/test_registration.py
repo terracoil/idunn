@@ -12,8 +12,7 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 import pytest
-from idunn import InvalidAdapterError, InvalidPortError, LifecycleEnum
-from idunn.app import Port
+from idunn import InvalidAdapterError, InvalidPortError, LifecycleEnum, Port
 from idunn.domain import AdapterDeclaration
 from idunn.internal import InversionMapper
 

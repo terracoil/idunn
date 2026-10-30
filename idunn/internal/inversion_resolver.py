@@ -16,6 +16,7 @@ from idunn.domain import (
 from .decorator_support import DecoratorSupport
 from .inversion_mapper import InversionMapper
 from .inversion_validator import InversionValidator
+from .port_registry import PortRegistry
 
 
 class InversionResolver:
@@ -152,7 +153,7 @@ class InversionResolver:
     environment: str,
     stack: tuple[type[Any], ...],
   ) -> Any:
-    if not getattr(port, '__idunn_port__', False):
+    if not PortRegistry.is_port(port):
       message = f'Cannot resolve a class that is not marked with @Port: {port.__qualname__}'
       raise InvalidPortError(message)
     metadata = self._mapper.select(port=port, key=key, environment=environment)

@@ -7,8 +7,7 @@ from textwrap import dedent
 from threading import Barrier, Thread
 
 import pytest
-from idunn import Idunn
-from idunn.domain import ReportMap
+from idunn import Idunn, ReportMap
 
 
 class SamplePackage:
@@ -16,14 +15,14 @@ class SamplePackage:
 
   PORTS = """
     from typing import Protocol
-    from idunn.app import Port
+    from idunn import Port
 
     @Port
     class AppleBasketPort(Protocol):
         def take_apple(self) -> str: ...
   """
   ADAPTER = """
-    from idunn.app import Adapter
+    from idunn import Adapter
     from {package}.ports import AppleBasketPort
 
     @Adapter(AppleBasketPort)

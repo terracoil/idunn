@@ -9,8 +9,7 @@ is defensive and structurally unreachable, hence not exercised here.
 from typing import Protocol
 
 import pytest
-from idunn import AdapterNotFoundError, InvalidAdapterError
-from idunn.app import Adapter, Port
+from idunn import Adapter, AdapterNotFoundError, InvalidAdapterError, Port
 from idunn.internal import InversionMapper
 
 
