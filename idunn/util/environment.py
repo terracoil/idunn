@@ -18,7 +18,7 @@ class Environment:
   _VALID_PATTERN = re.compile(r'[a-z0-9][a-z0-9.-]*')
 
   @classmethod
-  def current(cls, environment: str | None = None) -> 'Environment':
+  def current(cls, environment: str | None = None) -> Environment:
     """Resolve an environment from the argument, then ``IDUNN_ENV``, then ``local``.
     The variable is read on every call, but the facade only calls this when ``Idunn()`` is first
     built and on ``reset()``. That is why changing ``IDUNN_ENV`` mid-run does nothing until the
@@ -33,9 +33,8 @@ class Environment:
   def normalize(cls, environment: str) -> str:
     """Normalize and validate a name from ``@Adapter(envs=...)``, ``reset()`` or ``IDUNN_ENV``.
     Names are stripped and lowercased, and ``_`` becomes ``-`` so ``My_Env`` and ``my-env`` are
-    the same place; a blank name means ``local``. The traversal check is purely defensive, in
-    case a name ever ends up in a path. Only ``..`` can reach it, since the pattern already turns
-    away separators; the separator tests stay as a second lock on a door that is already shut.
+    the same place; a blank name means ``local``. The pattern already turns away path separators,
+    so the only traversal left to refuse is ``..``, in case a name ever ends up in a path.
     """
     normalized = environment.strip().lower().replace('_', '-')
     if not normalized:
@@ -46,7 +45,7 @@ class Environment:
         'or hyphens, and do not start with punctuation.'
       )
       raise ValueError(message)
-    if '/' in normalized or '\\' in normalized or '..' in normalized:
+    if '..' in normalized:
       message = f'Unsupported Idunn environment {environment!r}.'
       raise ValueError(message)
     return normalized

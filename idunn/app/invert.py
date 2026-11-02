@@ -8,6 +8,7 @@ from collections.abc import Callable, Mapping
 from typing import Any, get_type_hints
 
 from idunn.internal import DecoratorSupport
+from idunn.util import QualifiedName
 
 from .idunn import Idunn
 
@@ -73,7 +74,10 @@ class Invert:
     """Capture explicit ``param -> port`` mappings and per-parameter adapter keys."""
     # Bare @Invert hands us the function as ``ports``; better a TypeError now than a riddle later.
     if callable(ports) and not isinstance(ports, Mapping):
-      message = '@Invert must be applied with parentheses: use @Invert() or @Invert(keys=...)'
+      message = (
+        f'@Invert must be applied with parentheses on {QualifiedName.of(ports)}: '
+        'use @Invert() or @Invert(keys=...)'
+      )
       raise TypeError(message)
     self._explicit_ports: dict[str, type[Any]] = dict(ports) if ports is not None else {}
     self._keys: dict[str, str] = dict(keys) if keys is not None else {}

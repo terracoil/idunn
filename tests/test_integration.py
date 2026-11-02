@@ -14,6 +14,9 @@ from idunn import AdapterNotFoundError, Idunn, ReportMap
 
 from _support import PackageWriter
 
+# Lets `bin/devtool test unit` leave these out and `test integration` pick only these.
+pytestmark = pytest.mark.integration
+
 
 class Shop:
   """Source of the ``orchard_shop`` package and a loader for its modules."""

@@ -8,6 +8,7 @@ process singleton, and discovery tests write throwaway packages with :class:`Pac
 from __future__ import annotations
 
 import importlib
+import zipfile
 from pathlib import Path
 from textwrap import dedent
 from typing import Any
@@ -86,6 +87,19 @@ class PackageWriter:
         init.write_text('', encoding='utf-8')
     self._activate()
     return package_dir
+
+  def zipped_package(self, name: str, files: dict[str, str]) -> Path:
+    """Write package ``name`` into ``<name>.zip`` and put the archive itself on ``sys.path``.
+    Python imports it happily through ``zipimport``; discovery, which reads directories, should
+    refuse it out loud. ``files`` must supply every ``__init__.py`` it wants.
+    """
+    archive: Path = self._tmp_path / f'{name}.zip'
+    with zipfile.ZipFile(archive, 'w') as bundle:
+      for relative_path, source in files.items():
+        bundle.writestr(f'{name}/{relative_path}', self._text(source))
+    self._monkeypatch.syspath_prepend(str(archive))
+    importlib.invalidate_caches()
+    return archive
 
   def _activate(self) -> None:
     self._monkeypatch.syspath_prepend(str(self._tmp_path))

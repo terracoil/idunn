@@ -154,11 +154,11 @@ def test_select_raises_with_and_without_key_message() -> None:
     mapper.select(port=GreeterPort, key='nope', environment='local')
 
   assert 'with key' not in str(unkeyed.value)
-  assert "with key 'nope'" in str(keyed.value)
+  assert f"{__name__}.GreeterPort with key 'nope'" in str(keyed.value)
 
 
 def test_register_adapter_on_undecorated_class_raises() -> None:
   mapper = InversionMapper()
 
-  with pytest.raises(InvalidAdapterError):
+  with pytest.raises(InvalidAdapterError, match=f'{__name__}.PlainGreeter$'):
     mapper.register_adapter(PlainGreeter)

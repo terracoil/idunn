@@ -1,13 +1,13 @@
 """Environment resolution and validation: the legitimate-but-wrong env-name surface.
 ``Environment.normalize`` is where a user's bad ``reset(environment=...)`` / ``IDUNN_ENV``
-input is caught. The ``_VALID_PATTERN`` already excludes path separators, so the traversal
-guard is reachable only through a ``..`` substring (e.g. ``a..b``); the separator branches
-are defensive.
+input is caught. The ``_VALID_PATTERN`` already turns away path separators, so the only
+traversal left for the extra guard is a ``..`` substring (e.g. ``a..b``).
 """
 
 from __future__ import annotations
 
 import pytest
+from idunn import Idunn
 from idunn.util import Environment
 
 
@@ -43,3 +43,15 @@ def test_current_reads_explicit_then_env_var_then_default(
 
   # An explicit argument always wins over the environment variable.
   assert Environment.current('Explicit').name == 'explicit'
+
+
+def test_idunn_takes_no_arguments_even_once_it_exists() -> None:
+  # An argument honored on first construction and ignored ever after is worse than none at all.
+  assert Idunn() is Idunn()
+
+  with pytest.raises(TypeError):
+    Idunn(environment='prod')  # type: ignore[call-arg]
+  with pytest.raises(TypeError):
+    Idunn('prod')  # type: ignore[call-arg]
+
+  assert Idunn().environment == 'local'

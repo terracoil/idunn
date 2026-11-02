@@ -30,7 +30,7 @@ class BareProtocol(Protocol):
 def test_register_port_rejects_unmarked_protocol() -> None:
   mapper = InversionMapper()
 
-  with pytest.raises(InvalidPortError):
+  with pytest.raises(InvalidPortError, match=f'{__name__}.BareProtocol$'):
     mapper.register_port(BareProtocol)
 
 
@@ -52,8 +52,11 @@ def test_register_adapter_with_non_class_declaration_raises() -> None:
     port=SignalPort, key=None, lifecycle=LifecycleEnum.TRANSIENT, envs=None
   )
 
-  with pytest.raises(InvalidAdapterError):
+  local = f'{__name__}.test_register_adapter_with_non_class_declaration_raises.<locals>'
+  with pytest.raises(InvalidAdapterError) as refused:
     mapper.register_adapter(disguised_adapter)  # type: ignore[arg-type]
+
+  assert str(refused.value).endswith(f'{local}.disguised_adapter')
 
 
 def test_register_adapter_with_unmarked_port_declaration_raises() -> None:
@@ -69,5 +72,5 @@ def test_register_adapter_with_unmarked_port_declaration_raises() -> None:
   )
   adapter: type[Any] = Sneaky
 
-  with pytest.raises(InvalidPortError):
+  with pytest.raises(InvalidPortError, match=f'{__name__}.BareProtocol$'):
     mapper.register_adapter(adapter)

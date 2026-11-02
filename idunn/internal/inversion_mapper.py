@@ -102,7 +102,7 @@ class InversionMapper:
     still show a port that nobody has implemented yet.
     """
     if not PortRegistry.is_port(port):
-      message = f'Port is not marked with @Port: {port.__qualname__}'
+      message = f'Port is not marked with @Port: {QualifiedName.of(port)}'
       raise InvalidPortError(message)
     is_new = port not in self._ports  # capture before add mutates membership
     self._ports.add(port)
@@ -135,7 +135,7 @@ class InversionMapper:
   def _declaration_for(self, *, adapter: type[Any]) -> AdapterDeclaration:
     declaration = getattr(adapter, '__idunn_adapter_declaration__', None)
     if declaration is None or not isinstance(declaration, AdapterDeclaration):
-      message = f'Adapter class is not marked with @Adapter: {adapter.__qualname__}'
+      message = f'Adapter class is not marked with @Adapter: {QualifiedName.of(adapter)}'
       raise InvalidAdapterError(message)
     return declaration
 
@@ -144,7 +144,7 @@ class InversionMapper:
   ) -> NoReturn:
     location = f'in {environment!r}'
     detail = f' with key {key!r}' if key is not None else ''
-    message = f'No active adapter registered for port {port.__qualname__}{detail} {location}.'
+    message = f'No active adapter registered for port {QualifiedName.of(port)}{detail} {location}.'
     raise AdapterNotFoundError(message)
 
   def _refresh_cache(self) -> None:

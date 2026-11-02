@@ -6,6 +6,7 @@ import inspect
 from typing import Any
 
 from idunn.domain import AdapterMetadata, InvalidAdapterError, InvalidPortError
+from idunn.util import QualifiedName
 
 from .port_registry import PortRegistry
 
@@ -22,10 +23,10 @@ class InversionValidator:
     ``@Adapter`` checks both already; this is the backstop for a declaration attached by hand.
     """
     if not inspect.isclass(adapter):
-      message = f'Adapter must be a class: {adapter!r}'
+      message = f'Adapter must be a class: {QualifiedName.of(adapter)}'
       raise InvalidAdapterError(message)
     if not PortRegistry.is_port(port):
-      message = f'Adapter port is not marked with @Port: {port.__qualname__}'
+      message = f'Adapter port is not marked with @Port: {QualifiedName.of(port)}'
       raise InvalidPortError(message)
 
   @staticmethod
@@ -33,7 +34,7 @@ class InversionValidator:
     """Reject an instance that does not structurally satisfy its port Protocol."""
     if not isinstance(instance, port):
       message = (
-        f'Adapter {adapter.__qualname__} does not satisfy port {port.__qualname__}. '
+        f'Adapter {QualifiedName.of(adapter)} does not satisfy port {QualifiedName.of(port)}. '
         'Implement the Protocol structurally or inherit from the port explicitly.'
       )
       raise InvalidAdapterError(message)
@@ -54,9 +55,9 @@ class InversionValidator:
       )
       if shares_binding and cls._environments_overlap(other.envs, metadata.envs):
         message = (
-          f'Duplicate adapter key for {metadata.port.__qualname__} key={metadata.key!r} '
-          f'in overlapping environments: {other.adapter.__qualname__} and '
-          f'{metadata.adapter.__qualname__}.'
+          f'Duplicate adapter key for {QualifiedName.of(metadata.port)} key={metadata.key!r} '
+          f'in overlapping environments: {QualifiedName.of(other.adapter)} and '
+          f'{QualifiedName.of(metadata.adapter)}.'
         )
         raise InvalidAdapterError(message)
 

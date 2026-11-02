@@ -6,6 +6,7 @@ from typing import Any, TypeVar, runtime_checkable
 
 from idunn.domain import InvalidPortError
 from idunn.internal import PortRegistry
+from idunn.util import QualifiedName
 
 T = TypeVar('T', bound=type[Any])
 
@@ -25,9 +26,10 @@ class Port:
   # mypy insists __new__ yield a Port; returning the decorated class *is* the decorator.
   def __new__(cls, target: T) -> T:  # type: ignore[misc]
     """Check that ``target`` is a Protocol, record it, and return it in place of an instance."""
-    # typing.is_protocol is 3.13+; the private flag is the only check available on 3.11.
-    if not getattr(target, '_is_protocol', False):
-      message = f'@Port can only be applied to Protocol classes: {target.__qualname__}'
+    # typing.is_protocol is 3.13+; the private flag is the only check available on 3.11. The class
+    # test comes first because ``Repo[int]`` forwards the flag from the Protocol it parameterizes.
+    if not (isinstance(target, type) and getattr(target, '_is_protocol', False)):
+      message = f'@Port can only be applied to Protocol classes: {QualifiedName.of(target)}'
       raise InvalidPortError(message)
     PortRegistry.mark(target)
     return runtime_checkable(target)

@@ -12,6 +12,7 @@ from idunn.domain import (
   LifecycleEnum,
   MissingTypeHintError,
 )
+from idunn.util import QualifiedName
 
 from .decorator_support import DecoratorSupport
 from .inversion_mapper import InversionMapper
@@ -87,7 +88,7 @@ class InversionResolver:
     parameter: inspect.Parameter,
   ) -> None:
     if parameter.default is inspect.Signature.empty:
-      message = f'Missing constructor type hint for {adapter.__qualname__}.{parameter.name}'
+      message = f'Missing constructor type hint for {QualifiedName.of(adapter)}.{parameter.name}'
       raise MissingTypeHintError(message)
 
   def _inject_port_argument(
@@ -142,8 +143,8 @@ class InversionResolver:
     elif parameter.default is inspect.Signature.empty:
       # Not a port and no default: Idunn injects ports, never values, so there is nothing to pass.
       message = (
-        f'Cannot constructor-inject {adapter.__qualname__}.{parameter.name}: '
-        f'{annotation!r} is not an @Port and no default value was supplied.'
+        f'Cannot constructor-inject {QualifiedName.of(adapter)}.{parameter.name}: '
+        f'{QualifiedName.of(annotation)} is not an @Port and no default value was supplied.'
       )
       raise MissingTypeHintError(message)
 
@@ -156,11 +157,11 @@ class InversionResolver:
     stack: tuple[type[Any], ...],
   ) -> Any:
     if not PortRegistry.is_port(port):
-      message = f'Cannot resolve a class that is not marked with @Port: {port.__qualname__}'
+      message = f'Cannot resolve a class that is not marked with @Port: {QualifiedName.of(port)}'
       raise InvalidPortError(message)
     metadata = self._mapper.select(port=port, key=key, environment=environment)
     if metadata.adapter in stack:
-      cycle = ' -> '.join(item.__qualname__ for item in (*stack, metadata.adapter))
+      cycle = ' -> '.join(QualifiedName.of(item) for item in (*stack, metadata.adapter))
       raise InjectionCycleError(f'Constructor injection cycle detected: {cycle}')
     cached = self._instances.get(metadata.adapter, self._MISSING)
     return (

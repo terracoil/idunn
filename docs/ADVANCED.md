@@ -149,7 +149,9 @@ class FakePaymentAdapter(PaymentPort): ...
 
 The active environment comes from `Idunn().reset(environment=...)`, then the `IDUNN_ENV` variable,
 then the default `local`. It is fixed when `Idunn()` is first created and again on each `reset()`,
-never per resolve, so changing `IDUNN_ENV` mid-run does nothing until the next reset. Names are
+never per resolve, so changing `IDUNN_ENV` mid-run does nothing until the next reset. `Idunn()`
+itself takes no arguments, so `reset()` is the one place to choose; `Idunn(environment='ci')`
+raises `TypeError` rather than being honored once and ignored forever after. Names are
 stripped and lowercased with `_` turned into `-`, so `My_Env` and `my-env` are the same place. A
 blank name means `local`, and the result must match `[a-z0-9][a-z0-9.-]*` without containing `..`.
 
@@ -198,6 +200,11 @@ an overlapping environment raise `InvalidAdapterError` at registration. An env-a
 overlaps with everything. Idunn refuses to guess which apple you meant, and refuses at startup
 rather than at the first unlucky request.
 
+Two `@Adapter` lines on one class collide sooner still: the second raises `InvalidAdapterError` at
+import, because only one declaration could ever win, so one of the two lines was always wrong. A
+subclass may wear its own `@Adapter`; it is a different class and registers as one, while an
+undecorated subclass stays invisible to discovery.
+
 ---
 
 ![Idunn](https://github.com/terracoil/idunn/raw/master/docs/images/idunn-apple-square-50.png)
@@ -243,6 +250,11 @@ Idunn().autodiscover(
   file path does not work. The root sits outside the `strict` handling: a missing root raises
   `ModuleNotFoundError`, and a root whose `__init__` fails raises its own error, whatever `strict`
   says.
+- **Root must live in directories.** Discovery finds modules by walking the package's directories,
+  so a package that Python imports from a zip (a zipapp, an egg, some frozen bundles) cannot be
+  scanned. It raises `DiscoveryError` before anything registers, whatever `strict` says: there is
+  no module to list in `skipped_modules`, and a root nobody can read is a setup problem, not an
+  unlucky import. Install such packages unpacked.
 - **`ReportMap`.** Both calls return a `TypedDict` of strings: `root_package`, `imported_modules`
   (sorted, root included), `skipped_modules`, `registered_ports`, and `registered_adapters`. The
   last two list only the classes *this call* registered, so a repeat run reports none. Class names
@@ -329,16 +341,17 @@ class below:
 
 | Class | Raised when |
 |---|---|
-| `InvalidPortError` | `@Port` is applied to a non-Protocol, an adapter names an unmarked port, or a non-port is resolved (say, through an explicit `@Invert` map). |
-| `InvalidAdapterError` | `@Adapter` is applied to a non-class, two adapters collide, or a built instance does not satisfy its port. |
+| `InvalidPortError` | `@Port` is applied to anything but a Protocol (`Port(5)` included), an adapter names an unmarked port, or a non-port is resolved (say, through an explicit `@Invert` map). |
+| `InvalidAdapterError` | `@Adapter` is applied to a non-class or twice to one class, two adapters collide, or a built instance does not satisfy its port. |
 | `AdapterNotFoundError` | No active adapter exists for a requested port and the parameter is not optional. |
-| `DiscoveryError` | A module below the discovery root fails to import and `strict=True`. |
+| `DiscoveryError` | A module below the discovery root fails to import and `strict=True`, or the root package does not live in a directory (a zip, say), whatever `strict` says. |
 | `MissingTypeHintError` | An adapter constructor parameter without a default has no annotation, or one that is not a port. |
 | `InjectionCycleError` | Constructor resolution loops back on an adapter already under construction. |
 
 A few mistakes are caught by plain Python exceptions instead: an invalid environment name or
-`lifecycle` string raises `ValueError`, bare `@Invert` raises `TypeError`, and a discovery root that
-will not import raises its own import error.
+`lifecycle` string raises `ValueError`, bare `@Invert` and `Idunn(...)` with arguments raise
+`TypeError`, and a discovery root that will not import raises its own import error. Every Idunn
+message names the culprit as `module.QualName`, so two `Feast`s in two modules are never confused.
 
 ---
 

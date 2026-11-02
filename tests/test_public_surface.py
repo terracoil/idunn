@@ -28,21 +28,23 @@ EXPECTED_PUBLIC_NAMES = {
 
 
 class ImportProbe:
-  """Finds absolute ``from idunn.<...> import`` statements that bypass the public barrel.
-  Plain ``import idunn.x`` statements are not inspected.
+  """Finds absolute imports that bypass the public barrel or reach past a layer package.
+  ``from idunn.<...> import`` is flagged for a public name or a module path, and plain
+  ``import idunn.x.y`` for the module path. ``import idunn.internal`` names a layer package, which
+  is allowed, so the same two-dot line applies to both forms.
   """
 
   ROOTS: tuple[Path, ...] = (REPO_ROOT / 'tests', REPO_ROOT / 'examples')
 
   @staticmethod
   def offenders(path: Path, public: frozenset[str]) -> list[str]:
-    """Return ``line module.name`` for each public name or module path imported below ``idunn``.
+    """Return ``line dotted.name`` for each public name or module path imported below ``idunn``.
     Relative imports (``level > 0``) and bare ``from . import x`` (``module is None``) are
     skipped: they never name the ``idunn`` package. Hits are ordered by line number, because
     ``ast.walk`` is breadth-first.
     """
     tree: ast.Module = ast.parse(path.read_text(encoding='utf-8'))
-    hits: list[tuple[int, str]] = [
+    from_hits: list[tuple[int, str]] = [
       (node.lineno, f'{node.lineno} {node.module}.{alias.name}')
       for node in ast.walk(tree)
       if isinstance(node, ast.ImportFrom)
@@ -52,7 +54,14 @@ class ImportProbe:
       for alias in node.names
       if node.module.count('.') > 1 or alias.name in public
     ]
-    return [text for _, text in sorted(hits)]
+    plain_hits: list[tuple[int, str]] = [
+      (node.lineno, f'{node.lineno} {alias.name}')
+      for node in ast.walk(tree)
+      if isinstance(node, ast.Import)
+      for alias in node.names
+      if alias.name.startswith('idunn.') and alias.name.count('.') > 1
+    ]
+    return [text for _, text in sorted(from_hits + plain_hits)]
 
 
 def test_public_surface_matches_all() -> None:
@@ -93,8 +102,10 @@ def test_import_probe_flags_public_names_and_module_paths(tmp_path: Path) -> Non
     'from idunn.domain.report import ReportMap\n'
     'from idunn.internal import InversionMapper\n'
     'from idunn import Adapter\n'
-    'from .ports import AppleBasketPort\n',
+    'from .ports import AppleBasketPort\n'
+    'import idunn.domain.report\n'
+    'import idunn.internal, idunn\n',
     encoding='utf-8',
   )
   hits: list[str] = ImportProbe.offenders(sample, frozenset(idunn.__all__))
-  assert hits == ['2 idunn.app.Port', '3 idunn.domain.report.ReportMap']
+  assert hits == ['2 idunn.app.Port', '3 idunn.domain.report.ReportMap', '7 idunn.domain.report']

@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-Poetry project, in-project `.venv`, with `poetry.lock` committed.
+Poetry project, in-project `.venv`, with `poetry.lock` committed. `bin/devtool` (a Freyja CLI) wraps
+the same commands and also handles tagging and publishing; `bin/devtool test all|unit|integration`
+runs pytest, where `integration` selects the `integration` marker and `unit` everything else.
 
 ```bash
 poetry install --with dev
@@ -54,7 +56,16 @@ pins this set, so changing it means changing that test. The engine classes are n
 - **Decorators only attach metadata; nothing is constructed until an `@Invert`-decorated `__init__`
   runs.** `@Port` records the Protocol in `PortRegistry` (a `WeakSet` keyed by class identity) and
   makes it `runtime_checkable`; `@Adapter` stores a frozen `AdapterDeclaration` on the class;
-  `autodiscover()` only imports modules and registers.
+  `autodiscover()` only imports modules and registers. `@Adapter` refuses a class whose own
+  `__dict__` already holds a declaration (stacked decorators raise `InvalidAdapterError`); a
+  decorated subclass is fine.
+- **Error messages name things through `QualifiedName.of`**, which renders a class or function as
+  `module.QualName` and anything else, parameterized aliases such as `Repo[User]` included, as its
+  `repr`. So `Port(5)` raises `InvalidPortError` rather than an `AttributeError` from the message
+  itself. Never format `__qualname__`, or a class's `repr`, into a message directly.
+- **`Idunn()` takes no arguments**, and neither does `MetaSingleton.__call__`: a singleton argument
+  would count once and be ignored after. The environment comes from `IDUNN_ENV` or
+  `reset(environment=...)`.
 - **Only the exact decorated class is a port; subclasses are not.** Nothing is written into the
   Protocol's namespace, because Python 3.11 counts every attribute there as a protocol member and
   structural adapters would then fail `isinstance`. So an adapter that subclasses its port, or an
@@ -101,24 +112,26 @@ and key that are active in overlapping environments (either env-agnostic, or sha
 raise `InvalidAdapterError` at registration. `Environment.current` resolves the active env from
 `Idunn().reset(environment=...)`, then `IDUNN_ENV`, then `local`; names are stripped, lowercased
 with `_`→`-`, blank → `local`, validated against `[a-z0-9][a-z0-9.-]*`, and `..` is rejected. The
-facade reads it only at first construction and on each `reset()` (`Idunn(environment=...)` counts
-only on first construction), so changing `IDUNN_ENV` later has no effect until `reset()`.
+facade reads it only at first construction and on each `reset()`, so changing `IDUNN_ENV` later
+has no effect until `reset()`.
 
 ### AutoDiscovery boundary
 
-`Idunn().autodiscover(root)` imports every module under `root` (the root included, namespace
-directories too), skipping `__main__` parts, non-identifier parts, and test modules (`tests`,
-`test`, `test_*`, `*_test`, `conftest`) plus any `exclude` patterns (`fnmatchcase` on each dotted
-part below the root; user patterns add to the defaults). The module running as `__main__` is reused,
-never re-imported. All modules import first; then ports register across the whole set, then
-adapters, so a port first touched by an adapter is still reported as a port. A class counts only in
-the module that defines it (`__module__` filter, scanned via `vars()`); ports by `PortRegistry`
-identity, adapters by `__idunn_adapter__` in their *own* `__dict__`. `strict=True` raises
-`DiscoveryError` before anything registers; `strict=False` lists the module in `skipped_modules`;
-the root's own import errors propagate unwrapped regardless of `strict`. Registration is not atomic:
-an `InvalidAdapterError` mid-run leaves earlier registrations in place. The return value is a public
-`ReportMap` TypedDict of strings whose key set is pinned in `tests/test_public_surface.py`; its
-`registered_*` tuples list only classes newly registered by that call.
+`Idunn().autodiscover(root)` takes a dotted name (never a module object) and imports every module
+under `root` (the root included, namespace directories too), skipping `__main__` parts,
+non-identifier parts, and test modules (`tests`, `test`, `test_*`, `*_test`, `conftest`) plus any
+`exclude` patterns (`fnmatchcase` on each dotted part below the root; user patterns add to the
+defaults). The module running as `__main__` is reused, never re-imported. All modules import first;
+then ports register across the whole set, then adapters, so a port first touched by an adapter is
+still reported as a port. A class counts only in the module that defines it (`__module__` filter,
+scanned via `vars()`); ports by `PortRegistry` identity, adapters by `__idunn_adapter__` in their
+*own* `__dict__`. `strict=True` raises `DiscoveryError` before anything registers; `strict=False`
+lists the module in `skipped_modules`; the root's own import errors propagate unwrapped regardless
+of `strict`. A root `__path__` entry that is not a directory (a zip) raises `DiscoveryError` before
+any submodule imports, whatever `strict` says. Registration is not atomic: an `InvalidAdapterError`
+mid-run leaves earlier registrations in place. The return value is a public `ReportMap` TypedDict of
+strings whose key set is pinned in `tests/test_public_surface.py`; its `registered_*` tuples list
+only classes newly registered by that call.
 
 ## Testing conventions
 
@@ -131,9 +144,10 @@ an `InvalidAdapterError` mid-run leaves earlier registrations in place. The retu
 - Tests import public names from `idunn` exactly as users do, and so do the generated-module source
   strings that tests write to `tmp_path`. Non-public names come from the highest re-exporting layer
   package (`idunn.domain`, `idunn.internal`, `idunn.util`), never from a module path.
-  `tests/test_public_surface.py` enforces this for `from idunn... import` statements in `tests/` and
-  `examples/` (plain `import idunn.x` is not checked). The import strings in
-  `test_architecture.py` are `LayerProbe` fixtures and are exempt.
+  `tests/test_public_surface.py` enforces this in `tests/` and `examples/` for `from idunn...
+  import` statements and for plain `import idunn.x.y` module paths (`import idunn.internal`, a
+  layer package, is fine). The import strings in `test_architecture.py` are `LayerProbe` fixtures
+  and are exempt.
 
 ## Code style
 

@@ -7,6 +7,7 @@ from typing import Any, TypeVar
 
 from idunn.domain import AdapterDeclaration, InvalidAdapterError, InvalidPortError, LifecycleEnum
 from idunn.internal import DecoratorSupport, PortRegistry
+from idunn.util import QualifiedName
 
 T = TypeVar('T', bound=type[Any])
 
@@ -31,10 +32,18 @@ class Adapter:
     """Stamp the declaration onto ``cls`` and hand the class back otherwise untouched.
     Two stamps, two readers. Discovery looks for ``__idunn_adapter__`` in the class's *own*
     ``__dict__``, so an undecorated subclass does not inherit a badge it never wore; the mapper
-    reads the declaration through ordinary attribute lookup.
+    reads the declaration through ordinary attribute lookup. A second ``@Adapter`` on the same
+    class is refused: the inner declaration would be silently overwritten by the outer one, so one
+    of the two lines was always a lie. A subclass may still wear its own badge.
     """
     if not isinstance(cls, type):
-      message = f'@Adapter can only be applied to classes: {cls!r}'
+      message = f'@Adapter can only be applied to classes: {QualifiedName.of(cls)}'
+      raise InvalidAdapterError(message)
+    if '__idunn_adapter_declaration__' in vars(cls):
+      message = (
+        f'@Adapter is applied more than once to {QualifiedName.of(cls)}; one class gets one '
+        'declaration. Subclass it to declare another.'
+      )
       raise InvalidAdapterError(message)
     cls.__idunn_adapter__ = True
     cls.__idunn_adapter_declaration__ = self._declaration
@@ -50,7 +59,7 @@ class Adapter:
   ) -> None:
     """Validate ``port`` now and freeze the normalized declaration this decorator will apply."""
     if not PortRegistry.is_port(port):
-      message = f'Adapter port is not marked with @Port: {port.__qualname__}'
+      message = f'Adapter port is not marked with @Port: {QualifiedName.of(port)}'
       raise InvalidPortError(message)
     self._declaration: AdapterDeclaration = AdapterDeclaration(
       port=port,

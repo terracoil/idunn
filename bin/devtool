@@ -3,7 +3,6 @@
 
 Consolidates all development scripts into a single FreyjaCLI implementation.
 """
-# deprecated
 import glob
 import json
 import os
@@ -1171,8 +1170,8 @@ class FreyjaDevTools:
       self.pattern: str = pattern
       self.verbose: bool = verbose
 
-    def _build_test_cmd(self, test_mark: str) -> list[str]:
-      """Build pytest command with common options and specified test mark."""
+    def _build_test_cmd(self, test_mark: str | None = None) -> list[str]:
+      """Build the pytest command; ``test_mark`` is a ``-m`` expression, or None for every test."""
       parent = self.parent
       cmd_parts: list[str] = ['poetry', 'run', 'pytest']
 
@@ -1185,9 +1184,10 @@ class FreyjaDevTools:
         cmd_parts.append('-sv')
 
       if self.parallel:
-        cmd_parts.append('-n auto')
+        cmd_parts.extend(['-n', 'auto'])
 
-      cmd_parts.extend(['-m', test_mark])
+      if test_mark is not None:
+        cmd_parts.extend(['-m', test_mark])
 
       if self.pattern:
         cmd_parts.extend(['-k', self.pattern])
@@ -1201,11 +1201,13 @@ class FreyjaDevTools:
       parent = self.parent
       parent._print('🧪 Running unit tests with coverage...', 'info')
 
-      cmd_parts = self._build_test_cmd('unit')
+      # Anything not marked integration is a unit test; nobody wants to badge every file.
+      cmd_parts = self._build_test_cmd('not integration')
       success = parent._run_command(cmd_parts)
 
       if success:
-        parent._print('📊 Coverage report generated in htmlcov/', 'info')
+        if self.coverage:
+          parent._print('📊 Coverage report generated in htmlcov/', 'info')
         parent._print('Unit tests completed successfully!', 'success')
       else:
         parent._print('Unit tests failed!', 'error')
@@ -1219,7 +1221,8 @@ class FreyjaDevTools:
       success = parent._run_command(cmd_parts)
 
       if success:
-        parent._print('📊 Coverage report generated in htmlcov/', 'info')
+        if self.coverage:
+          parent._print('📊 Coverage report generated in htmlcov/', 'info')
         parent._print('Integration tests completed successfully!', 'success')
       else:
         parent._print('Integration tests failed!', 'error')
@@ -1229,11 +1232,12 @@ class FreyjaDevTools:
       parent = self.parent
       parent._print('🧪 Running all tests (unit and integration)...', 'info')
 
-      cmd_parts = self._build_test_cmd('unit or integration')
+      cmd_parts = self._build_test_cmd()
       success = parent._run_command(cmd_parts)
 
       if success:
-        parent._print('📊 Coverage report generated in htmlcov/', 'info')
+        if self.coverage:
+          parent._print('📊 Coverage report generated in htmlcov/', 'info')
         parent._print('All tests completed successfully!', 'success')
       else:
         parent._print('Some tests failed!', 'error')

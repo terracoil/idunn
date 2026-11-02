@@ -378,6 +378,21 @@ def test_autodiscover_strict_raises_before_registering_anything(writer: PackageW
   assert Idunn()._mapper.ports == frozenset()
 
 
+@pytest.mark.parametrize('strict', [True, False])
+def test_autodiscover_refuses_a_zipped_root_whatever_strict_says(
+  writer: PackageWriter, strict: bool
+) -> None:
+  pkg = f'disc_zipped_{str(strict).lower()}'
+  archive = writer.zipped_package(pkg, {'__init__.py': Sources.PORT, 'adapters.py': Sources.both()})
+
+  with pytest.raises(DiscoveryError, match=f'{pkg}.*{archive.name}'):
+    Idunn().autodiscover(pkg, strict=strict)
+
+  # Refused before scanning: nothing below the root is imported, and not even its port registers.
+  assert f'{pkg}.adapters' not in sys.modules
+  assert Idunn()._mapper.ports == frozenset()
+
+
 def test_autodiscover_non_strict_skips_and_reports_unimportable(writer: PackageWriter) -> None:
   pkg = 'disc_lenient'
   writer.package(

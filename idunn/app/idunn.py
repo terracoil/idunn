@@ -21,12 +21,12 @@ class Idunn(metaclass=MetaSingleton):
   there is deliberately no public ``resolve()`` to tempt business code into calling it.
   """
 
-  def __init__(self, *, environment: str | None = None) -> None:
-    """Bind to the resolved environment and start with an empty engine.
-    ``environment`` counts only on first construction, because later ``Idunn()`` calls return the
-    existing instance without coming back here; use ``reset(environment=...)`` instead.
+  def __init__(self) -> None:
+    """Bind to the environment from ``IDUNN_ENV`` (or ``local``) and start with an empty engine.
+    Takes no arguments: this runs once per process, so an argument here would be honored once and
+    then ignored forever. ``reset(environment=...)`` is the one place to choose.
     """
-    self._environment: str = Environment.current(environment).name
+    self._environment: str = Environment.current().name
     self._mapper: InversionMapper = InversionMapper()
     self._resolver: InversionResolver = InversionResolver(self._mapper)
     self._bootstrap_lock: RLock = RLock()

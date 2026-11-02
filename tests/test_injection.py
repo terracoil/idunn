@@ -239,9 +239,14 @@ def test_duplicate_key_with_overlapping_environments_raises() -> None:
     pass
 
   table.register_adapter(StripePaymentAdapter)
+  local = f'{__name__}.test_duplicate_key_with_overlapping_environments_raises.<locals>'
 
-  with pytest.raises(InvalidAdapterError):
+  # Both culprits by full name: two Stripe adapters in two modules would otherwise look identical.
+  with pytest.raises(InvalidAdapterError) as collision:
     table.register_adapter(BraintreePaymentAdapter)
+
+  assert f'{local}.PaymentPort' in str(collision.value)
+  assert f'{local}.StripePaymentAdapter and {local}.BraintreePaymentAdapter' in str(collision.value)
 
 
 def test_duplicate_unkeyed_adapters_in_overlapping_envs_raises() -> None:
@@ -278,9 +283,14 @@ def test_invalid_adapter_does_not_satisfy_port() -> None:
     pass
 
   table.register_adapter(RockBasketAdapter)
+  local = f'{__name__}.test_invalid_adapter_does_not_satisfy_port.<locals>'
 
-  with pytest.raises(InvalidAdapterError):
+  with pytest.raises(InvalidAdapterError) as mismatch:
     table.resolve(AppleBasketPort)
+
+  assert f'{local}.RockBasketAdapter does not satisfy port {local}.AppleBasketPort' in str(
+    mismatch.value
+  )
 
 
 def test_missing_explicit_key_raises() -> None:
@@ -306,8 +316,12 @@ def test_non_port_resolution_raises() -> None:
   class NotAPort:
     pass
 
-  with pytest.raises(InvalidPortError):
+  with pytest.raises(InvalidPortError) as refused:
     table.resolve(NotAPort)
+
+  assert str(refused.value).endswith(
+    f'{__name__}.test_non_port_resolution_raises.<locals>.NotAPort'
+  )
 
 
 def test_constructor_parameter_without_type_hint_raises() -> None:
@@ -324,8 +338,33 @@ def test_constructor_parameter_without_type_hint_raises() -> None:
 
   table.register_adapter(ServiceAdapter)
 
-  with pytest.raises(MissingTypeHintError):
+  with pytest.raises(MissingTypeHintError) as missing:
     table.resolve(ServicePort)
+
+  local = f'{__name__}.test_constructor_parameter_without_type_hint_raises.<locals>'
+  assert str(missing.value).endswith(f'{local}.ServiceAdapter.dependency')
+
+
+def test_constructor_parameter_typed_as_a_plain_value_raises() -> None:
+  table = Wiring()
+
+  @Port
+  class ServicePort(Protocol):
+    pass
+
+  @Adapter(ServicePort)
+  class ServiceAdapter(ServicePort):
+    def __init__(self, label: str) -> None:
+      self.label = label
+
+  table.register_adapter(ServiceAdapter)
+
+  # Idunn injects ports, never values; a str with no default has nobody to supply it.
+  with pytest.raises(MissingTypeHintError) as refused:
+    table.resolve(ServicePort)
+
+  local = f'{__name__}.test_constructor_parameter_typed_as_a_plain_value_raises.<locals>'
+  assert f'{local}.ServiceAdapter.label: builtins.str is not an @Port' in str(refused.value)
 
 
 def test_constructor_cycle_raises() -> None:
@@ -352,8 +391,13 @@ def test_constructor_cycle_raises() -> None:
   table.register_adapter(FirstAdapter)
   table.register_adapter(SecondAdapter)
 
-  with pytest.raises(InjectionCycleError):
+  with pytest.raises(InjectionCycleError) as cycle:
     table.resolve(FirstPort)
+
+  local = f'{__name__}.test_constructor_cycle_raises.<locals>'
+  assert str(cycle.value).endswith(
+    f'{local}.FirstAdapter -> {local}.SecondAdapter -> {local}.FirstAdapter'
+  )
 
 
 def test_constructor_optional_dependency_falls_back_when_absent() -> None:
