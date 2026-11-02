@@ -39,7 +39,7 @@ discovery options, inspection, testing, the exceptions, and the lines Idunn will
 | Several adapters for one port? | `envs=` separates them by environment; `key=` makes one opt-in. |
 | Optional dependency? | Type the parameter `SomePort \| None`, or give it a default. |
 | Field, setter, or value injection? | No. Constructor-time ports only. |
-| Config files, global scanning, name-based guessing? | No. |
+| Config files, scanning outside the root, name-based guessing? | No. |
 
 ---
 
@@ -48,8 +48,8 @@ discovery options, inspection, testing, the exceptions, and the lines Idunn will
 ## When resolution happens
 
 Decorators construct nothing. `@Port` and `@Adapter` attach metadata; `@Invert()` wraps a
-constructor. Discovery imports the bounded modules so the decorators run, then registers the decorated
-classes; it constructs nothing either. Apples are catalogued at discovery and picked at construction.
+constructor. Discovery imports the modules under the root so the decorators run, then registers the
+decorated classes; it constructs nothing either. Apples are catalogued at discovery and picked at construction.
 
 Construction fires when an `@Invert()`-decorated object is built:
 
@@ -192,26 +192,45 @@ overlaps with everything. Idunn refuses to guess which apple you meant.
 ```python
 Idunn().autodiscover(
   'my_app',
-  port_package_names=None,  # dotted-path parts that mark port modules; default {'port', 'ports'}
-  adapter_package_names=None,  # likewise for adapters; default {'adapter', 'adapters'}
+  exclude=(),  # extra dotted-path parts to skip, as fnmatch patterns; added to the defaults
   strict=True,  # raise DiscoveryError on an unimportable module instead of skipping it
 )
 ```
 
-- **Naming rule.** A module qualifies when any part of its dotted path matches one of the names,
-  case-insensitively. Override the names when your layout uses `contracts/` and `impl/` instead.
+- **What is imported.** Every module under the root, the root itself included, directories without
+  an `__init__.py` too. Three things are never imported: any dotted part named `__main__`, any part
+  that is not a valid Python identifier (`my-scripts/`, `0001_initial.py`), and test modules
+  (`tests`, `test`, `test_*`, `*_test`, `conftest`). Only classes bound at module level count, and a
+  class registers through the one module that defines it, so a re-export is counted once and a
+  class imported from outside the root is not registered through it.
+- **The running `__main__`.** `python -m my_app.main` runs `main.py` as `__main__`. When discovery
+  reaches that module it reuses the running copy instead of importing a second one, so a port or
+  adapter declared in the entry module still works. A script run by path (`python my_app/main.py`)
+  cannot be matched, so run entry points with `-m`.
+- **`exclude`.** Patterns are `fnmatchcase` globs matched against each dotted part *below* the root;
+  a matching package part prunes its whole subtree. They add to the test defaults, and a bare string
+  counts as one pattern (`exclude='migrations'`). The root's own name never matches, so to discover
+  in-package test fakes on purpose make the test package the root: `autodiscover('my_app.tests')`.
+- **`strict`.** All modules import before anything registers, so with `strict=True` an unimportable
+  module raises `DiscoveryError` naming it and leaves the catalog untouched; `bootstrap` does not
+  cache the failure. With `strict=False` the module is skipped and listed in `skipped_modules`. Only
+  `Exception` is caught: a module that calls `sys.exit()` or parses `argv` at import raises
+  `SystemExit`, which is not swallowed. Prefer `exclude` for such modules.
+- **Keep modules import-safe.** Everything under the root is imported at discovery, so module bodies
+  should only define things. Work belongs behind `if __name__ == '__main__':` or in functions.
 - **Root must be importable.** Pass the package's dotted name exactly as you would `import` it. A file
   path does not work.
-- **`ReportMap`.** Both calls return a `TypedDict` of strings: `root_package`,
-  `imported_port_modules`, `imported_adapter_modules`, `imported_modules`, `registered_ports`, and
-  `registered_adapters`. Class names are fully qualified. Import it as `from idunn import ReportMap`
-  when you annotate a stored report.
+- **`ReportMap`.** Both calls return a `TypedDict` of strings: `root_package`, `imported_modules`
+  (sorted, root included), `skipped_modules`, `registered_ports`, and `registered_adapters`. Class
+  names are fully qualified. Import it as `from idunn import ReportMap` when you annotate a stored
+  report.
 - **Multiple roots accumulate.** Registration is idempotent and the catalog is shared, so call
-  discovery once per package that contributes adapters.
+  discovery once per package that contributes adapters. Each root registers only the classes defined
+  under it.
 - **`bootstrap` caches per root.** The first call for a root discovers with the options given. Later
   calls for that root return the same report without rescanning and ignore their options. Distinct
-  roots are tracked independently, the guard is locked, and `reset()` forgets the cache along with
-  the registrations.
+  roots are tracked independently, the guard is locked, failures are not cached, and `reset()`
+  forgets the cache along with the registrations.
 
 ---
 
@@ -283,7 +302,7 @@ All inherit from `IdunnError` and import from `idunn`:
 | `InvalidPortError` | `@Port` is applied to a non-Protocol, or an adapter names an unmarked port. |
 | `InvalidAdapterError` | `@Adapter` is applied to a non-class, two adapters collide, or a built instance does not satisfy its port. |
 | `AdapterNotFoundError` | No active adapter exists for a requested port and the parameter is not optional. |
-| `DiscoveryError` | A bounded module fails to import and `strict=True`. |
+| `DiscoveryError` | A module under the discovery root fails to import and `strict=True`. |
 | `MissingTypeHintError` | An adapter constructor parameter has no type hint, or is not a port and has no default. |
 | `InjectionCycleError` | Constructor resolution loops back on an adapter already under construction. |
 
@@ -311,9 +330,9 @@ The non-features are deliberate, so there is no point hunting for them:
 - **No value or configuration injection.** Only `@Port`-typed parameters are injected. Plain values
   come from the caller.
 - **No field or setter injection.** Constructor-time only.
-- **No YAML, no package-wide or subclass scanning, no "name ends in `Adapter`" guessing, no implicit
-  protocol matching, and no construction during decoration or discovery.** If an adapter wants in, it
-  wears the badge.
+- **No YAML, no scanning outside the root, no subclass scanning, no "name ends in `Adapter`"
+  guessing, no implicit protocol matching, and no construction during decoration or discovery.** If
+  an adapter wants in, it wears the badge.
 
 ---
 

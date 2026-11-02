@@ -33,18 +33,18 @@ class Idunn(metaclass=MetaSingleton):
     self,
     root_package: str,
     *,
-    port_package_names: Iterable[str] | None = None,
-    adapter_package_names: Iterable[str] | None = None,
+    exclude: Iterable[str] | str = (),
     strict: bool = True,
   ) -> ReportMap:
-    """Import bounded port/adapter modules under ``root_package`` and register them."""
+    """Import every module under ``root_package`` and register its decorated classes.
+
+    Test modules (``tests``, ``test``, ``test_*``, ``*_test``, ``conftest``), any ``__main__``
+    and every ``exclude`` pattern are skipped; patterns match each dotted part below the root.
+    """
     return AutoDiscovery().autodiscover(
       mapper=self._mapper,
       root_package=root_package,
-      port_package_names=frozenset(port_package_names) if port_package_names is not None else None,
-      adapter_package_names=(
-        frozenset(adapter_package_names) if adapter_package_names is not None else None
-      ),
+      exclude=exclude,
       strict=strict,
     )
 
@@ -52,8 +52,7 @@ class Idunn(metaclass=MetaSingleton):
     self,
     root_package: str,
     *,
-    port_package_names: Iterable[str] | None = None,
-    adapter_package_names: Iterable[str] | None = None,
+    exclude: Iterable[str] | str = (),
     strict: bool = True,
   ) -> ReportMap:
     """Run ``autodiscover`` for ``root_package`` at most once per process.
@@ -70,12 +69,7 @@ class Idunn(metaclass=MetaSingleton):
     if root_package not in self._bootstrapped:
       with self._bootstrap_lock:
         if root_package not in self._bootstrapped:
-          report = self.autodiscover(
-            root_package,
-            port_package_names=port_package_names,
-            adapter_package_names=adapter_package_names,
-            strict=strict,
-          )
+          report = self.autodiscover(root_package, exclude=exclude, strict=strict)
           # A re-entered bootstrap (nested call during discovery) caches first; keep its
           # report, which lists the registrations, rather than the outer, emptier one.
           self._bootstrapped.setdefault(root_package, report)

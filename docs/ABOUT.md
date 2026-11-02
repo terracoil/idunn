@@ -147,7 +147,8 @@ from idunn import Idunn
 report = Idunn().autodiscover('telemetry')  # imports and registers every @Port/@Adapter under it
 ```
 
-That is the single registration step for an application. A library, which has no startup to speak
+That is the single registration step for an application. The module names inside `telemetry` are
+yours to choose; the decorator is what counts. A library, which has no startup to speak
 of, calls `Idunn().bootstrap('telemetry')` from its entry points instead and gets the same result on
 first use. Either way the call returns a `ReportMap` of what was imported and registered, handy for a
 startup log.
@@ -247,8 +248,8 @@ else.
 
 ## The features Idunn refuses
 
-Half of Idunn's design is the features it cheerfully declines to grow: no YAML, no package-wide or
-subclass scanning, no name-based guessing, no implicit protocol matching, no construction during
+Half of Idunn's design is the features it cheerfully declines to grow: no YAML, no scanning outside
+the root, no subclass scanning, no name-based guessing, no implicit protocol matching, no construction during
 decoration or discovery, no field or setter injection, and no public `resolve()`. The full list,
 with the reasoning for each, is in [`ADVANCED.md`](./ADVANCED.md#limitations-and-non-features).
 

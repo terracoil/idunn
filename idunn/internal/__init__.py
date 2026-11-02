@@ -1,7 +1,7 @@
 """Internal layer: discovery, the inversion engine, and decorator-support helpers.
 
 These power the :class:`~idunn.app.Idunn` facade — the catalog (``InversionMapper``),
-the construction engine (``InversionResolver``), bounded autodiscovery (``AutoDiscovery``),
+the construction engine (``InversionResolver``), root-scoped autodiscovery (``AutoDiscovery``),
 the ``DecoratorSupport`` helpers, and the ``PortRegistry`` of ``@Port`` Protocols. The classes reached across the package boundary are
 re-exported here (e.g. for ``idunn.app``); the stateless ``InversionValidator`` is used
 only via sibling imports within ``idunn.internal`` and is **not** re-exported. None of

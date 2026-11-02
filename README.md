@@ -50,10 +50,15 @@ That is the entire surface. Registration, selection, and construction happen beh
 ## Discovery: `autodiscover` and `bootstrap`
 
 Idunn registers nothing on import. Decorators only attach metadata; one discovery call per process
-imports your port and adapter modules so the decorated classes get catalogued. Both calls walk
-`root_package` and import only modules whose dotted path contains a part named `port`, `ports`,
-`adapter`, or `adapters`. Ports register before adapters, undecorated classes are ignored, and nothing
-is constructed.
+imports your modules so the decorated classes get catalogued. Both calls import every module under
+`root_package` (skipping `__main__` and test modules) and register each class wearing `@Port` or
+`@Adapter`, whatever its module is called. The package you name is the boundary: nothing outside it
+is imported or registered. Ports register before adapters, undecorated classes are ignored, and
+nothing is constructed.
+
+Discovery imports everything under the root, so keep module import cheap and side-effect free. Put
+scripts behind `if __name__ == '__main__':`, and pass `exclude=` for modules that do work at import
+or need optional dependencies.
 
 | Call | Use it when | Behavior |
 |---|---|---|
@@ -72,7 +77,8 @@ app = MyApp()  # MyApp.__init__ is @Invert()-decorated; the graph wires itself
 ### Libraries
 
 A library is imported, not started, and discovery at import time is a side effect nobody asked for.
-Put `bootstrap` inside the library's own entry points so wiring happens the first time anyone uses it:
+Put `bootstrap` inside the library's own entry points so wiring happens the first time anyone uses it,
+and bootstrap the narrowest package that holds your ports and adapters:
 
 ```python
 from idunn import Idunn
@@ -102,8 +108,12 @@ any library it uses still bootstraps itself.
 
 ## Normal usage
 
-Put ports in a module or package named `ports`, adapters in one named `adapters`, decorate the
-consumer's constructor with `@Invert()`, discover once, then construct.
+Discovery finds every `@Port` and `@Adapter` under the root you name, whatever the modules are
+called. For a small app, the layout below is all you need: a `ports.py`, an `adapters.py`, and your
+entry point beside them. As it grows, turn either file into a package (`ports/`, `adapters/stripe.py`)
+or give each feature its own pair (`billing/ports.py`, `billing/adapters.py`). The names are for the
+people reading your code; Idunn doesn't check them. Decorate the consumer's constructor with
+`@Invert()`, discover once, then construct.
 
 ```text
 my_app/
@@ -200,9 +210,11 @@ Run the example with `python -m examples.my_app.main`; there the discovery root 
 
 ## What gets registered
 
-Only classes wearing the decorator. A class that satisfies a port but lacks `@Adapter(...)` is invisible
-to discovery, and a module outside the `ports`/`adapters` naming rule is never imported. Looking the
-part is not the same as wearing the badge.
+Only classes wearing the decorator, defined at module level in a module under the root. A class that
+satisfies a port but lacks `@Adapter(...)` is invisible to discovery. So is an undecorated subclass of
+an adapter, a decorated class in a test module or an `exclude`d one, and a decorated class imported
+from another package (discover that package as its own root). Looking the part is not the same as
+wearing the badge.
 
 ---
 

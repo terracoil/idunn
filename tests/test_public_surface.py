@@ -59,6 +59,16 @@ def test_public_surface_matches_all() -> None:
   assert set(idunn.__all__) == EXPECTED_PUBLIC_NAMES
 
 
+def test_report_map_shape_is_pinned() -> None:
+  assert set(idunn.ReportMap.__required_keys__) == {
+    'root_package',
+    'imported_modules',
+    'skipped_modules',
+    'registered_ports',
+    'registered_adapters',
+  }
+
+
 def test_public_names_are_importable() -> None:
   missing = [name for name in EXPECTED_PUBLIC_NAMES if not hasattr(idunn, name)]
   assert not missing, f'missing from idunn: {missing}'

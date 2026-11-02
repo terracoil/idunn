@@ -1,4 +1,4 @@
-"""Adapters for ``my_app`` (discovered because the module is named ``adapters``)."""
+"""Adapters for ``my_app``, kept in ``adapters`` by convention beside ``ports``."""
 
 from idunn import Adapter, LifecycleEnum
 

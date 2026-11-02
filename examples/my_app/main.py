@@ -2,7 +2,8 @@
 
 Run from the repo root with ``poetry run python -m examples.my_app.main``. The discovery root is
 ``'examples.my_app'`` because here ``my_app`` lives inside the ``examples`` package; in your own
-project it is just ``'my_app'``.
+project it is just ``'my_app'``. Discovery imports every module under the root, this one included,
+so the work stays under the ``__main__`` guard; the copy you are running is never imported twice.
 """
 
 from idunn import Idunn, Invert

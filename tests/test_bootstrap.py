@@ -1,13 +1,14 @@
 """``Idunn().bootstrap``: lazy, once-per-root autodiscovery for library entry points."""
 
 import importlib
+import inspect
 import shutil
 from pathlib import Path
 from textwrap import dedent
 from threading import Barrier, Thread
 
 import pytest
-from idunn import Idunn, ReportMap
+from idunn import DiscoveryError, Idunn, ReportMap
 
 
 class SamplePackage:
@@ -100,7 +101,7 @@ def test_bootstrap_ignores_options_on_repeat_calls(
   SamplePackage.install(tmp_path=tmp_path, monkeypatch=monkeypatch, package=package)
   first = Idunn().bootstrap(package)
 
-  second = Idunn().bootstrap(package, adapter_package_names={'nowhere'}, strict=False)
+  second = Idunn().bootstrap(package, exclude='adapters', strict=False)
 
   assert second is first
   assert len(second['registered_adapters']) == 1
@@ -177,4 +178,28 @@ def test_bootstrap_reentered_during_discovery_does_not_deadlock(
   # The nested call registers the adapter first and its report is the one kept.
   assert Idunn().bootstrap(package) is reports[0]
   assert len(reports[0]['registered_adapters']) == 1
+  assert SamplePackage.take_apple(package) == f'golden apple from {package}'
+
+
+def test_autodiscover_and_bootstrap_share_one_signature() -> None:
+  assert inspect.signature(Idunn.autodiscover) == inspect.signature(Idunn.bootstrap)
+
+
+def test_bootstrap_retries_after_a_failed_discovery(
+  tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  package = 'bootstrap_app_seven'
+  package_dir = SamplePackage.install(tmp_path=tmp_path, monkeypatch=monkeypatch, package=package)
+  broken = package_dir / 'broken.py'
+  broken.write_text('raise RuntimeError("not yet")\n', encoding='utf-8')
+
+  with pytest.raises(DiscoveryError, match='broken'):
+    Idunn().bootstrap(package)
+
+  # A failed run is not cached, so fixing the module and calling again discovers for real.
+  broken.unlink()
+  importlib.invalidate_caches()
+  report = Idunn().bootstrap(package)
+
+  assert len(report['registered_adapters']) == 1
   assert SamplePackage.take_apple(package) == f'golden apple from {package}'
