@@ -13,13 +13,13 @@ from .ports import AppleBasketPort
 
 class Feast:
   """An ``@Invert()`` root: its basket arrives when it is constructed.
-  Pass ``host`` by keyword; positionally it would land in ``basket``, which nobody enjoys.
+  The port sits after ``*``, keyword-only, so ``Feast('Bragi')`` can only mean the host.
   """
 
   basket: AppleBasketPort  # declared for the type checker; @Invert assigns it
 
   @Invert()
-  def __init__(self, basket: AppleBasketPort, host: str) -> None:
+  def __init__(self, host: str, *, basket: AppleBasketPort) -> None:
     """Keep ``host``; ``self.basket`` is already injected and assigned by the time this runs."""
     self.host = host
 
@@ -30,4 +30,4 @@ class Feast:
 
 if __name__ == '__main__':
   Idunn().autodiscover('examples.my_app')
-  print(Feast(host='Bragi').serve())  # Bragi: youth restored
+  print(Feast('Bragi').serve())  # Bragi: youth restored

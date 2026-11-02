@@ -29,7 +29,7 @@ class Consumer:
   basket: BasketPort  # declared for the type checker; assigned by @Invert at runtime
 
   @Invert()
-  def __init__(self, basket: BasketPort, label: str) -> None:
+  def __init__(self, label: str, *, basket: BasketPort) -> None:
     self.label = label
 
 
@@ -37,7 +37,7 @@ class KeyedConsumer:
   basket: BasketPort
 
   @Invert(keys={'basket': 'plain'})
-  def __init__(self, basket: BasketPort) -> None:
+  def __init__(self, *, basket: BasketPort) -> None:
     pass
 
 
@@ -45,7 +45,7 @@ class ExplicitConsumer:
   basket: object
 
   @Invert({'basket': BasketPort})
-  def __init__(self, basket: object, label: str) -> None:
+  def __init__(self, label: str, *, basket: object) -> None:
     self.label = label
 
 
@@ -53,7 +53,7 @@ class OptionalConsumer:
   basket: BasketPort | None
 
   @Invert()
-  def __init__(self, basket: BasketPort | None = None) -> None:
+  def __init__(self, *, basket: BasketPort | None = None) -> None:
     pass
 
 
@@ -61,7 +61,7 @@ class OptionalKeyedConsumer:
   basket: BasketPort | None
 
   @Invert(keys={'basket': 'missing'})
-  def __init__(self, basket: BasketPort | None = None) -> None:
+  def __init__(self, *, basket: BasketPort | None = None) -> None:
     pass
 
 
@@ -83,7 +83,7 @@ class ServiceConsumer:
   service: ServicePort
 
   @Invert()
-  def __init__(self, service: ServicePort) -> None:
+  def __init__(self, *, service: ServicePort) -> None:
     pass
 
 

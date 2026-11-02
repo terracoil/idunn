@@ -33,13 +33,14 @@ cross.
 |---|---|
 | Define a dependency? | A `Protocol` marked `@Port`. |
 | Bind an implementation? | A class marked `@Adapter(port, ...)`. |
-| Receive dependencies? | Decorate the consumer's `__init__` with `@Invert()`. |
+| Receive dependencies? | Decorate the consumer's `__init__`, or a function, with `@Invert()`. |
 | Register everything? | `Idunn().autodiscover('my_app')` once at startup, or `Idunn().bootstrap('my_lib')` from a library's entry points. |
 | Does `@Adapter` make the class implement the port? | No. The class must satisfy the Protocol itself. |
-| When is injection done? | When an `@Invert()` constructor runs. Never at decoration or discovery. |
+| When is injection done? | When an `@Invert()` constructor or function runs. Never at decoration or discovery. |
 | Several adapters for one port? | `envs=` separates them by environment; `key=` makes one opt-in. |
+| Port parameters? | Keyword-only, after `*`. |
 | Optional dependency? | Type the parameter `SomePort \| None`, or give it a default. |
-| Field, setter, or value injection? | No. Constructor-time ports only. |
+| Field, setter, or value injection? | No. Ports only, as constructor or function parameters. |
 | Config files, scanning outside the root, name-based guessing? | No, no, and no. |
 
 ---
@@ -49,24 +50,28 @@ cross.
 ## When resolution happens
 
 Decorators construct nothing. `@Port` and `@Adapter` attach metadata; `@Invert()` wraps a
-constructor. Discovery imports the modules under the root so the decorators run, then registers the
-decorated classes; it constructs nothing either. Apples are catalogued at discovery and picked at
-construction, never the other way round.
+constructor or function. Discovery imports the modules under the root so the decorators run, then
+registers the decorated classes; it constructs nothing either. Apples are catalogued at discovery
+and picked at construction, never the other way round.
 
-Construction fires when an `@Invert()`-decorated object is built:
+Construction fires when an `@Invert()`-decorated object is built, or an `@Invert()` function is
+called:
 
 ```python
-feast = Feast(host='Bragi')  # @Invert resolves Feast's @Port parameters, then runs __init__
+feast = Feast('Bragi')  # @Invert resolves Feast's @Port parameters, then runs __init__
+served = harvest('Asgard')  # the same, for a function: its ports arrive as keyword arguments
 ```
 
 At that moment Idunn:
 
 1. selects the active adapter for each `@Port`-typed parameter the caller did not supply;
-2. inspects that adapter's constructor and recursively resolves its own `@Port` parameters;
+2. plans that adapter's constructor once (cached until `reset()`), honouring its own `@Invert` keys
+   and map, and recursively resolves its `@Port` parameters;
 3. instantiates dependencies first, then the adapter, and checks the instance satisfies the port;
 4. caches `SINGLETON` instances and rebuilds `TRANSIENT` ones each time (`lifecycle=` also accepts
    the lowercase strings `'singleton'` and `'transient'`);
-5. assigns every port parameter to `self.<name>` on the consumer, then runs the body.
+5. on a constructor, assigns every port parameter to `self.<name>`, then runs the body; a function
+   just receives them as keyword arguments.
 
 Dependency order is worked out at resolution time, not registration time, so registration order
 never matters. Two adapters that depend on each other raise `InjectionCycleError`, which is kinder
@@ -79,39 +84,76 @@ than the alternative.
 ## The `@Invert` contract in full
 
 ```python
-@Invert()  # infer ports from the constructor's type hints
-@Invert(keys={'basket': 'wild'})  # pick keyed adapters per parameter
-@Invert({'basket': AppleBasketPort})  # explicit param -> port, for an un-annotated parameter
+@Invert()  # infer ports from the type hints
+@Invert(keys={'basket': 'wild'})  # pick keyed adapters per parameter (declared after '*')
+@Invert({'basket': AppleBasketPort})  # explicit param -> port, for a hint that is not a port
 ```
 
-- **It assigns `self.<name>`** for every port parameter, injected or caller-supplied, before the
-  wrapped body runs, and forwards the same value into the body as a normal argument.
+- **On a constructor it assigns `self.<name>`** for every port parameter, injected or
+  caller-supplied, before the wrapped body runs, and forwards the same value into the body as a
+  normal argument.
+- **Functions.** On anything not named `__init__` (a plain function, a method, a static method),
+  `@Invert()` fills the port parameters at call time and passes them as keyword arguments, and
+  assigns nothing anywhere: no `self.<name>`, no attribute on the function. Every other rule on
+  this list applies unchanged. The form comes from the name in the function's own `def`, read
+  from its code object, not from the attribute it ends up stored under: a method called
+  `handle(self, ...)` receives its ports like any function, and so does a function defined under
+  another name and then assigned as `__init__` (no `self.<name>` for it).
+
+  ```python
+  @Invert(keys={'notifier': 'sms'})
+  def remind(user: str, *, notifier: NotifierPort, logger: LoggerPort | None = None) -> None:
+    notifier.send(user)
+    if logger is not None:
+      logger.write(f'reminded {user}')
+
+
+  remind('Bragi')  # sms notifier injected; logger is None unless a LoggerPort adapter is active
+  ```
+
 - **A caller-supplied argument always wins.** Passing the parameter skips injection for it, which
-  keeps the class trivially testable.
-- **Pass plain arguments by keyword.** A positional argument fills the next parameter whether it is
-  a port or not: with `__init__(self, basket: AppleBasketPort, host: str)`, `Feast('Bragi')` binds
-  `'Bragi'` to `basket` and then raises `TypeError` about the missing `host`. Either pass plain
-  values by keyword or declare port parameters last.
+  keeps the class, or the function, trivially testable.
+- **Port parameters are keyword-only.** Declare every port after `*`, annotated, mapped or keyed:
+  with `__init__(self, host: str, *, basket: AppleBasketPort)`, `Feast('Bragi')` can only mean
+  `host`, and a positional argument can never land in a port. A port declared positionally
+  (`/` included) raises `TypeError` at decoration, or at the first call if its hint is a forward
+  reference that cannot resolve yet. A call passing more positional arguments than the plain
+  parameters take raises `TypeError` before anything is built. Undecorated adapter constructors are
+  exempt, since the resolver passes every port by keyword; the samples here use `*` anyway.
 - **Resolution is recursive.** If the chosen adapter's own constructor takes `@Port` parameters,
   those resolve first, all the way down.
 - **Optional dependencies.** A parameter typed `SomePort | None`, or any `@Port` parameter with a
   default, is optional: when no adapter is active it receives the default, or `None`, instead of
   raising `AdapterNotFoundError`. The same rule applies inside an adapter's own constructor.
 - **Keyed selection at the point of use.** `keys={'param': 'name'}` picks a keyed adapter where it
-  is consumed rather than in a container call elsewhere. Keys apply only at `@Invert()` consumers;
-  an adapter's own dependencies always resolve unkeyed, so a keyed adapter never sneaks into
-  someone else's constructor.
+  is consumed rather than in a container call elsewhere. Keys apply wherever `@Invert(keys=...)`
+  decorates something: a consumer's constructor, an adapter's constructor or a function. A plain
+  `@Invert()` or undecorated adapter constructor resolves unkeyed, so a keyed adapter never sneaks
+  into a constructor that did not ask for it by name.
 - **Explicit mapping.** `@Invert({'param': SomePort})` injects a parameter whose annotation is
-  missing or is not a port.
-  If the parameter is annotated with a `@Port` as well, the annotation wins and the map entry is
-  ignored: the hint is the contract, the map is a fallback for when there is no hint.
+  missing or is not a port. If the parameter is annotated with a `@Port` as well, `@Invert` raises
+  `InvalidPortError`: one parameter, one contract. An adapter constructor's map is honoured too.
+- **Checked at decoration.** A mistake fails at import, next to its culprit. A map value that is
+  not a port, a map entry on a port-annotated parameter, and a key on a parameter that is not a
+  port raise `InvalidPortError`. A key that is not a `str`, a mapped or keyed name that is not a
+  parameter (the instance slot, `*args` and `**kwargs` do not count), a port parameter (annotated,
+  mapped or keyed) that is not keyword-only, a second `@Invert` on the same function, `@Invert()`
+  on anything but a function, and `@Invert()` above `@staticmethod` or `@classmethod` raise
+  `TypeError`. It belongs beneath them, on the plain function, where it has a function to wrap;
+  above them it would hand the class a plain function where a descriptor belongs.
+- **Forward references.** A hint may name a class defined further down the module, or the class
+  being defined (`parent: Node | None` inside `Node`), wherever Python allows it:
+  `from __future__ import annotations`, or 3.14 without it. The shape checks read the function's
+  code object and never evaluate a hint, so they still fire at decoration. The three checks that
+  need the hints (map versus annotation, keys on ports only, port-annotated parameters
+  keyword-only) wait for the first call if a hint cannot resolve yet, and raise there instead.
 - **Parentheses are required.** `Invert` is a class; applying it bare raises `TypeError` at
   decoration rather than something stranger later.
 
 ```python
 class Service:
   @Invert()
-  def __init__(self, logger: LoggerPort | None = None) -> None:
+  def __init__(self, *, logger: LoggerPort | None = None) -> None:
     self.logger = logger  # None if nothing satisfies LoggerPort
 ```
 
@@ -173,7 +215,7 @@ class Reminder:
   notifier: NotifierPort  # assigned by @Invert
 
   @Invert(keys={'notifier': 'sms'})
-  def __init__(self, notifier: NotifierPort) -> None:
+  def __init__(self, *, notifier: NotifierPort) -> None:
     pass
 ```
 
@@ -335,12 +377,15 @@ def _reset_idunn():
 
 `reset(environment=...)` resolves the environment from its argument, then `IDUNN_ENV`, then `local`.
 Because a reset empties the catalog, run it before discovery, not after; the other order is a very
-thorough way to test nothing.
+thorough way to test nothing. A reset also forgets each adapter's constructor plan, worked out on
+its first build: a test that monkeypatches an adapter's `__init__` after that keeps the old plan
+until the next reset.
 
 Adapters defined inside a test function are out of discovery's reach, and the facade has no public
-register or resolve. Idunn's own suite drives the internal engine through two seams in
-`tests/_support.py`: `Wiring`, a standalone mapper plus resolver, and `Container.install(...)`,
-which pushes adapters into the singleton for `@Invert()` tests.
+register or resolve. Idunn's own suite drives the internal engine through three seams in
+`tests/_support.py`: `Wiring`, a standalone mapper plus resolver; `Container.install(...)`, which
+pushes adapters into the singleton for `@Invert()` tests; and `Resolve.port(...)`, which builds one
+port through the facade's private door.
 
 ---
 
@@ -353,7 +398,7 @@ class below:
 
 | Class | Raised when |
 |---|---|
-| `InvalidPortError` | `@Port` is applied to anything but a Protocol (`Port(5)` included), an adapter names an unmarked port, or a non-port is resolved (say, through an explicit `@Invert` map). |
+| `InvalidPortError` | `@Port` is applied to anything but a Protocol (`Port(5)` included), an adapter names an unmarked port, an `@Invert` map value is not a port, a parameter is both port-annotated and mapped, or `keys` names a parameter that is not a port. |
 | `InvalidAdapterError` | `@Adapter` is applied to a non-class or twice to one class, two adapters collide (the discovery run that hits it registers nothing), or a built instance does not satisfy its port. |
 | `AdapterNotFoundError` | No active adapter exists for a requested port and the parameter is not optional. |
 | `DiscoveryError` | A module below the discovery root fails to import and `strict=True`, or the root package does not live in a directory (a zip, say), whatever `strict` says. |
@@ -361,9 +406,12 @@ class below:
 | `InjectionCycleError` | Constructor resolution loops back on an adapter already under construction. |
 
 A few mistakes are caught by plain Python exceptions instead: an invalid environment name or
-`lifecycle` string raises `ValueError`, bare `@Invert` and `Idunn(...)` with arguments raise
-`TypeError`, and a discovery root that will not import raises its own import error. Every Idunn
-message names the culprit as `module.QualName`, so two `Feast`s in two modules are never confused.
+`lifecycle` string raises `ValueError`; bare `@Invert`, the `@Invert` shape mistakes listed under
+[the contract](#the-invert-contract-in-full), too many positional arguments to an `@Invert`
+constructor or function, a positional-only port on an adapter constructor and `Idunn(...)` with
+arguments raise `TypeError`; and a discovery root that will not import raises its own import
+error. Every Idunn message names the culprit as `module.QualName`, so two `Feast`s in two modules
+are never confused.
 
 ---
 
@@ -385,14 +433,16 @@ The limitations are prices paid for a single process-wide container:
 The non-features are deliberate, so there is no point hunting for them:
 
 - **No public `resolve()`.** Resolving by hand invites container code into business logic. The only
-  construction trigger is an `@Invert()` constructor; resolution still happens inside it.
+  construction trigger is an `@Invert()` constructor or function; resolution still happens inside
+  it.
 - **No lifecycle on `@Invert`.** Lifecycle belongs to the provider, `@Adapter`, the single source of
   truth for a binding.
 - **No priority or fallback ordering.** The only disambiguators are `key` and `envs`; overlaps fail
   loud with `InvalidAdapterError`.
 - **No value or configuration injection.** Only `@Port`-typed parameters are injected. Plain values
   come from the caller.
-- **No field or setter injection.** Constructor-time only.
+- **No field or setter injection.** Ports arrive as constructor or function parameters, nowhere
+  else.
 - **No YAML, no scanning outside the root, no subclass scanning, no "name ends in `Adapter`"
   guessing, no implicit protocol matching, and no construction during decoration or discovery.** If
   an adapter wants in, it wears the badge.

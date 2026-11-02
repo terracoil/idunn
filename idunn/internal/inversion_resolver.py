@@ -1,29 +1,31 @@
-"""The construction engine: recursive constructor-time resolution with cycle detection."""
+"""The construction engine: recursive, plan-driven resolution with cycle detection."""
 
 from __future__ import annotations
 
-import inspect
-from typing import Any, ClassVar, get_type_hints
+from typing import Any, ClassVar
 
 from idunn.domain import (
   AdapterMetadata,
   InjectionCycleError,
   InvalidPortError,
   LifecycleEnum,
-  MissingTypeHintError,
+  ParameterPlan,
 )
 from idunn.util import QualifiedName
 
-from .decorator_support import DecoratorSupport
+from .constructor_planner import ConstructorPlanner
 from .inversion_mapper import InversionMapper
 from .inversion_validator import InversionValidator
 from .port_registry import PortRegistry
 
 
 class InversionResolver:
-  """Builds object graphs by resolving each adapter's ``@Port``-typed constructor parameters.
-  Choosing the adapter is the mapper's job; this class owns the recursion, the in-progress cycle
-  stack and the cache of ``SINGLETON`` instances.
+  """Builds object graphs by filling each adapter's planned port parameters, recursively.
+  Choosing the adapter is the mapper's job and deciding which parameters are ports is the
+  :class:`ConstructorPlanner`'s; this class owns the recursion, the in-progress cycle stack, the
+  cache of ``SINGLETON`` instances and the cache of constructor plans. ``@Invert`` wrappers and
+  adapter constructors fill their parameters through the same :meth:`inject`, which is why an
+  optional port behaves identically in both.
   """
 
   # Cache-miss sentinel: a cached singleton may be falsy, so None cannot double as 'not cached'.
@@ -33,14 +35,19 @@ class InversionResolver:
     """Bind the resolver to the catalog it asks for adapter selections."""
     self._mapper: InversionMapper = mapper
     self._instances: dict[type[Any], Any] = {}
+    # Per adapter class, filled on first build. No lock: a racing duplicate is an identical plan.
+    self._plans: dict[type[Any], tuple[ParameterPlan, ...]] = {}
 
   def clear(self) -> None:
-    """Drop every cached singleton instance."""
+    """Drop every cached singleton instance and constructor plan."""
     self._instances.clear()
+    self._plans = {}
 
-  def resolve(self, *, port: type[Any], key: str | None, environment: str) -> Any:
-    """Resolve ``port`` into an adapter instance for ``environment``."""
-    return self._resolve(port=port, key=key, environment=environment, stack=())
+  def inject(self, *, parameter: ParameterPlan, environment: str) -> Any:
+    """Fill ``parameter`` for ``environment``: its active adapter, or its fallback if tolerant.
+    The one door for ``@Invert`` wrappers; adapter constructors use the same rule from inside.
+    """
+    return self._inject(parameter=parameter, environment=environment, stack=())
 
   def _build(
     self,
@@ -50,103 +57,47 @@ class InversionResolver:
     environment: str,
     stack: tuple[type[Any], ...],
   ) -> Any:
-    instance = self._construct(
-      adapter=metadata.adapter,
-      environment=environment,
-      stack=(*stack, metadata.adapter),
+    adapter: type[Any] = metadata.adapter
+    inner: tuple[type[Any], ...] = (*stack, adapter)
+    instance: Any = adapter(
+      **{
+        parameter.name: self._inject(parameter=parameter, environment=environment, stack=inner)
+        for parameter in self._plan_for(adapter)
+      }
     )
-    InversionValidator.validate_instance(port=port, adapter=metadata.adapter, instance=instance)
+    InversionValidator.validate_instance(port=port, adapter=adapter, instance=instance)
     if metadata.lifecycle == LifecycleEnum.SINGLETON:
-      self._instances[metadata.adapter] = instance
+      self._instances[adapter] = instance
     return instance
 
-  def _construct(
+  def _inject(
     self,
     *,
-    adapter: type[Any],
+    parameter: ParameterPlan,
     environment: str,
     stack: tuple[type[Any], ...],
   ) -> Any:
-    signature = inspect.signature(adapter.__init__)
-    type_hints = get_type_hints(adapter.__init__)
-    kwargs: dict[str, Any] = {}
-    for parameter in list(signature.parameters.values())[1:]:
-      self._populate_constructor_argument(
-        adapter=adapter,
-        parameter=parameter,
-        type_hints=type_hints,
-        kwargs=kwargs,
-        environment=environment,
-        stack=stack,
+    # A `Port | None` parameter, or any port parameter with a default, survives a missing adapter.
+    absent: bool = (
+      parameter.tolerant
+      and self._mapper.find(port=parameter.port, key=parameter.key, environment=environment) is None
+    )
+    return (
+      parameter.fallback
+      if absent
+      else self._resolve(
+        port=parameter.port, key=parameter.key, environment=environment, stack=stack
       )
-    return adapter(**kwargs)
+    )
 
-  def _handle_missing_annotation(
-    self,
-    *,
-    adapter: type[Any],
-    parameter: inspect.Parameter,
-  ) -> None:
-    if parameter.default is inspect.Signature.empty:
-      message = f'Missing constructor type hint for {QualifiedName.of(adapter)}.{parameter.name}'
-      raise MissingTypeHintError(message)
-
-  def _inject_port_argument(
-    self,
-    *,
-    parameter: inspect.Parameter,
-    port: type[Any],
-    optional: bool,
-    kwargs: dict[str, Any],
-    environment: str,
-    stack: tuple[type[Any], ...],
-  ) -> None:
-    # A `Port | None` param, or any @Port param with a default, tolerates a missing adapter.
-    has_default = parameter.default is not inspect.Signature.empty
-    absent = (optional or has_default) and self._mapper.find(
-      port=port, key=None, environment=environment
-    ) is None
-    # Absent with a default: pass nothing and let Python supply the default.
-    if absent and not has_default:
-      kwargs[parameter.name] = None  # optional, no default: None it is
-    elif not absent:
-      # Keys are the consumer's choice, so adapter-to-adapter dependencies resolve unkeyed.
-      kwargs[parameter.name] = self._resolve(
-        port=port, key=None, environment=environment, stack=stack
+  def _plan_for(self, adapter: type[Any]) -> tuple[ParameterPlan, ...]:
+    plan: tuple[ParameterPlan, ...] | None = self._plans.get(adapter)
+    if plan is None:
+      plan = ConstructorPlanner.plan_adapter(
+        adapter, keyword_only=ConstructorPlanner.KEYWORD_ONLY_PORTS
       )
-
-  def _populate_constructor_argument(
-    self,
-    *,
-    adapter: type[Any],
-    parameter: inspect.Parameter,
-    type_hints: dict[str, Any],
-    kwargs: dict[str, Any],
-    environment: str,
-    stack: tuple[type[Any], ...],
-  ) -> None:
-    if parameter.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
-      return  # *args / **kwargs are never injected
-    annotation = type_hints.get(parameter.name, parameter.annotation)
-    port, optional = DecoratorSupport.port_from_annotation(annotation)
-    if annotation is inspect.Signature.empty:
-      self._handle_missing_annotation(adapter=adapter, parameter=parameter)
-    elif port is not None:
-      self._inject_port_argument(
-        parameter=parameter,
-        port=port,
-        optional=optional,
-        kwargs=kwargs,
-        environment=environment,
-        stack=stack,
-      )
-    elif parameter.default is inspect.Signature.empty:
-      # Not a port and no default: Idunn injects ports, never values, so there is nothing to pass.
-      message = (
-        f'Cannot constructor-inject {QualifiedName.of(adapter)}.{parameter.name}: '
-        f'{QualifiedName.of(annotation)} is not an @Port and no default value was supplied.'
-      )
-      raise MissingTypeHintError(message)
+      self._plans[adapter] = plan  # only a plan that worked is kept; a failure retries next time
+    return plan
 
   def _resolve(
     self,

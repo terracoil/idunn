@@ -107,7 +107,7 @@ class MyApp:
   greeter: GreeterPort  # assigned by @Invert
 
   @Invert()
-  def __init__(self, greeter: GreeterPort) -> None:
+  def __init__(self, *, greeter: GreeterPort) -> None:
     pass
 
   def run(self) -> None:
@@ -164,7 +164,7 @@ class Engine:
   storage: StoragePort  # assigned by @Invert
 
   @Invert()
-  def __init__(self, storage: StoragePort) -> None:
+  def __init__(self, *, storage: StoragePort) -> None:
     pass
 
   def store(self, key: str, value: str) -> None:
@@ -247,7 +247,7 @@ class Feast:
   basket: AppleBasketPort  # declared for the type checker; @Invert assigns it
 
   @Invert()
-  def __init__(self, basket: AppleBasketPort, host: str) -> None:
+  def __init__(self, host: str, *, basket: AppleBasketPort) -> None:
     self.host = host  # self.basket is injected and assigned for you
 
   def serve(self) -> str:
@@ -256,7 +256,7 @@ class Feast:
 
 if __name__ == '__main__':
   Idunn().autodiscover('my_app')
-  print(Feast(host='Bragi').serve())  # Bragi: youth restored
+  print(Feast('Bragi').serve())  # Bragi: youth restored
 ```
 
 Run it as a module, `python -m my_app.main`. Run by path, the relative imports have nothing to be
@@ -285,15 +285,28 @@ relative to and Python says so. In this repo the copy is one package deeper, so 
 
 * ### `@Invert()`
   Wraps a consumer's `__init__`. Every parameter whose type hint is a `@Port` is resolved when the
-  constructor runs, assigned to `self.<name>`, and passed into the body. Four things to know:
-  - A caller-supplied argument always wins, so `Feast(basket=fake, host='x')` skips injection and
-    the class stays easy to test.
-  - Pass plain arguments by keyword. `Feast('Bragi')` hands `'Bragi'` to `basket`, the next
-    parameter in line, and then complains that `host` is missing.
+  constructor runs, assigned to `self.<name>`, and passed into the body. On any other function it
+  does the same at call time, minus the assignment: the ports arrive as keyword arguments and
+  nothing is kept anywhere.
+
+  ```python
+  @Invert()
+  def harvest(orchard: str, *, basket: AppleBasketPort) -> str:
+    return f'{orchard}: {basket.take_apple()}'
+
+
+  harvest('Asgard')  # basket is resolved and passed in; harvest(..., basket=fake) skips that
+  ```
+
+  Four things to know:
+  - A caller-supplied argument always wins, so `Feast('x', basket=fake)` skips injection and the
+    class stays easy to test.
+  - Port parameters are keyword-only: declare them after `*`, and `@Invert()` refuses anything
+    else. So `Feast('Bragi')` can only mean `host`, and a port you supply yourself goes by name.
   - Resolution is recursive: an adapter's own `@Port` constructor parameters are resolved first.
-  - Constructing an `@Invert()` object is the only way to start a graph. There is no `resolve()`.
-    Always apply it with parentheses. Keyed selection, explicit parameter maps and optional
-    dependencies are in [Advanced](./docs/ADVANCED.md#the-invert-contract-in-full).
+  - Calling an `@Invert()` constructor or function is the only way to start a graph. There is no
+    `resolve()`. Always apply it with parentheses. Keyed selection, explicit parameter maps and
+    optional dependencies are in [Advanced](./docs/ADVANCED.md#the-invert-contract-in-full).
 
 ---
 

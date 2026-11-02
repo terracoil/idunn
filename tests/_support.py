@@ -2,8 +2,9 @@
 The public ``Idunn`` facade has no register or resolve, on purpose, which is inconvenient only for
 the people testing it. Engine-level tests drive :class:`Wiring` (a standalone mapper and
 resolver), ``@Invert()`` integration tests use :class:`Container` to install adapters into the
-process singleton, discovery tests write throwaway packages with :class:`PackageWriter`, and
-:class:`ImportingCall` runs a callable as a module body, for tests that need to be mid-import.
+process singleton, :class:`Resolve` builds a port by hand through the facade's private door,
+discovery tests write throwaway packages with :class:`PackageWriter`, and :class:`ImportingCall`
+runs a callable as a module body, for tests that need to be mid-import.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from typing import Any
 
 import pytest
 from idunn import Idunn
+from idunn.domain import ParameterPlan
 from idunn.internal import InversionMapper, InversionResolver
 from idunn.util import Environment
 
@@ -51,7 +53,7 @@ class Wiring:
 
   def resolve(self, port: type[Any], *, key: str | None = None) -> Any:
     """Resolve a port into an adapter instance for this engine's environment."""
-    return self.resolver.resolve(port=port, key=key, environment=self.environment)
+    return self.resolver.inject(parameter=Resolve.required(port, key), environment=self.environment)
 
 
 class Container:
@@ -61,6 +63,20 @@ class Container:
   def install(*adapters: type[Any]) -> None:
     """Register the adapters into the singleton's catalog as one batch: all of them, or none."""
     Idunn()._mapper.register_batch(adapters=adapters)
+
+
+class Resolve:
+  """Resolves a port by hand through the facade's one private door, as a required parameter."""
+
+  @staticmethod
+  def port(port: type[Any], key: str | None = None) -> Any:
+    """Build ``port``'s adapter in the singleton's environment; raise as a required port would."""
+    return Idunn()._inject(Resolve.required(port, key))
+
+  @staticmethod
+  def required(port: type[Any], key: str | None = None) -> ParameterPlan:
+    """Plan ``port`` with no default and no ``| None``, so a missing adapter raises."""
+    return ParameterPlan(name='port', port=port, key=key, optional=False)
 
 
 class ImportingCall(importlib.abc.MetaPathFinder, importlib.abc.Loader):

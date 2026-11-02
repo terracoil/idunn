@@ -10,8 +10,9 @@ class IdunnError(Exception):
 class InvalidPortError(IdunnError):
   """Raised when something that is not a ``@Port`` is asked to act like one.
   That covers ``@Port`` on anything but a Protocol (``Port(5)`` included), ``@Adapter`` naming
-  an unmarked port, and resolving a non-port, for example through an explicit ``@Invert({...})``
-  entry.
+  an unmarked port, an ``@Invert({...})`` map value that is not a port, and resolving a non-port.
+  It also covers the two ``@Invert`` contradictions about ports: a parameter both annotated with a
+  port and mapped to one, and ``keys`` naming a parameter that is not a port.
   """
 
 

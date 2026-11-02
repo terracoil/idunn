@@ -125,5 +125,5 @@ def test_bare_invert_raises_type_error_naming_the_constructor() -> None:
 
     class Feast:
       @Invert  # type: ignore[arg-type, misc]
-      def __init__(self, basket: BasketPort) -> None:
+      def __init__(self, *, basket: BasketPort) -> None:
         self.basket = basket

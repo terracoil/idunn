@@ -1,6 +1,6 @@
-"""Annotation and environment helpers shared by the decorators and the resolver."""
+"""Annotation and environment helpers shared by the decorators and the constructor planner."""
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from typing import Any, get_args
 
 from idunn.util import Environment
@@ -9,29 +9,10 @@ from .port_registry import PortRegistry
 
 
 class DecoratorSupport:
-  """Helpers shared by the decorators and the resolver.
-  One copy of the annotation rules means ``@Invert()`` consumers and adapter constructors cannot
-  drift apart on what counts as an optional port.
+  """Helpers shared by the decorators and the constructor planner.
+  One copy of the annotation rule means ``@Invert`` functions and adapter constructors cannot drift
+  apart on what counts as an optional port.
   """
-
-  @staticmethod
-  def extract_port_parameters(
-    hints: Mapping[str, Any],
-  ) -> tuple[dict[str, type[Any]], set[str]]:
-    """Split a ``name -> annotation`` mapping into ``(ports, optional_names)`` for ``@Invert()``.
-    ``ports`` maps each ``@Port``-typed parameter name to its port; ``optional_names`` holds the
-    subset annotated ``Port | None``. The synthetic ``'return'`` key and every non-port
-    annotation are skipped.
-    """
-    ports: dict[str, type[Any]] = {}
-    optional_names: set[str] = set()
-    for name, annotation in hints.items():
-      port, is_optional = DecoratorSupport.port_from_annotation(annotation)
-      if name != 'return' and port is not None:
-        ports[name] = port
-        if is_optional:
-          optional_names.add(name)
-    return (ports, optional_names)
 
   @staticmethod
   def normalize_envs(envs: Iterable[str] | str | None) -> frozenset[str] | None:

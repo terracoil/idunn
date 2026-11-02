@@ -119,7 +119,12 @@ class Shop:
 
         @Invert()
         def __init__(
-          self, customer: str, pricing: PricingPort, stock: StockPort, audit: AuditPort | None = None
+          self,
+          customer: str,
+          *,
+          pricing: PricingPort,
+          stock: StockPort,
+          audit: AuditPort | None = None,
         ) -> None:
           self.customer = customer
 
@@ -133,12 +138,12 @@ class Shop:
         stock: StockPort
 
         @Invert(keys={'stock': 'demo'})
-        def __init__(self, stock: StockPort) -> None:
+        def __init__(self, *, stock: StockPort) -> None:
           pass
 
       class Kiosk:
         @Invert({'greeter': LoudGreeterPort})
-        def __init__(self, greeter) -> None:
+        def __init__(self, *, greeter) -> None:
           pass
     """,
     # A library-style entry point that bootstraps its own root on first use.

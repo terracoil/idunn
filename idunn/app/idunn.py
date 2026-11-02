@@ -6,7 +6,7 @@ from collections.abc import Callable, Iterable
 from functools import partial
 from typing import Any
 
-from idunn.domain import AdapterMetadata, LifecycleEnum, PortBinding, ReportMap
+from idunn.domain import AdapterMetadata, LifecycleEnum, ParameterPlan, PortBinding, ReportMap
 from idunn.internal import AutoDiscovery, BootstrapGate, InversionMapper, InversionResolver
 from idunn.util import Environment, MetaSingleton, QualifiedName
 
@@ -90,7 +90,7 @@ class Idunn(metaclass=MetaSingleton):
     return self._environment
 
   def reset(self, *, environment: str | None = None) -> Idunn:
-    """Forget registrations, singletons and bootstrap memory, then rebind the environment.
+    """Forget registrations, singletons, adapter plans and bootstrap memory; rebind the environment.
     Returns ``self`` so tests can chain, e.g. ``Idunn().reset(environment='ci').environment``.
     """
     self._environment = Environment.current(environment).name
@@ -112,10 +112,9 @@ class Idunn(metaclass=MetaSingleton):
     lines.extend(self._describe_adapter(metadata=metadata) for metadata in binding.adapters)
     return lines
 
-  def _has(self, port: type[Any], key: str | None = None) -> bool:
-    """Report whether ``port`` has an active adapter, so ``@Invert()`` can honor optional deps."""
-    return self._mapper.find(port=port, key=key, environment=self._environment) is not None
-
-  def _inject(self, port: type[Any], key: str | None = None) -> Any:
-    """Resolve ``port`` for ``@Invert()``, the one sanctioned way to get something built."""
-    return self._resolver.resolve(port=port, key=key, environment=self._environment)
+  def _inject(self, parameter: ParameterPlan) -> Any:
+    """Fill one ``@Invert`` parameter in the current environment: the single door into the engine.
+    Tolerance (optional ports, defaults) is decided behind it, by the same rule adapter
+    constructors use, so an ``@Invert`` function and an adapter cannot disagree about it.
+    """
+    return self._resolver.inject(parameter=parameter, environment=self._environment)

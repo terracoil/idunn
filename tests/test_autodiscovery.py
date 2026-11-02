@@ -11,7 +11,7 @@ from types import ModuleType
 import pytest
 from idunn import AdapterNotFoundError, DiscoveryError, Idunn, InvalidAdapterError
 
-from _support import PackageWriter
+from _support import PackageWriter, Resolve
 
 
 class Sources:
@@ -67,7 +67,7 @@ class Sources:
   def take_apple(module_name: str) -> str:
     """Resolve ``AppleBasketPort`` from ``module_name`` through the singleton."""
     ports = importlib.import_module(module_name)
-    return str(Idunn()._inject(ports.AppleBasketPort).take_apple())
+    return str(Resolve.port(ports.AppleBasketPort).take_apple())
 
 
 @pytest.fixture
@@ -489,7 +489,7 @@ def test_autodiscover_constructs_nothing(writer: PackageWriter) -> None:
     f'{pkg}.z_apple.GoldenBasket',
   )
 
-  feast = Idunn()._inject(ports.FeastPort)
+  feast = Resolve.port(ports.FeastPort)
 
   assert feast.serve() == 'feast with golden'
   assert feast_module.constructed == 1
@@ -579,7 +579,7 @@ def test_autodiscover_reuses_the_module_running_as_main(tmp_path: Path) -> None:
         basket: AppleBasketPort
 
         @Invert()
-        def __init__(self, basket: AppleBasketPort) -> None:
+        def __init__(self, *, basket: AppleBasketPort) -> None:
           pass
 
       if __name__ == "__main__":

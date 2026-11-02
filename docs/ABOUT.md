@@ -54,10 +54,10 @@ from idunn import ReportMap  # the TypedDict autodiscover() and bootstrap() retu
 
 The surface is small on purpose. There is no registry object to thread through your code, no
 service locator to import, and, deliberately, **no public `resolve()`**. The only way to start an
-object graph is to construct an `@Invert()`-decorated object; from there the graph wires itself. A
-container you can call from anywhere ends up called from everywhere, and then your business logic
-knows about your wiring. A toolkit small enough to read on a coffee break is also small enough to
-trust.
+object graph is to construct an `@Invert()`-decorated object or call an `@Invert()` function; from
+there the graph wires itself. A container you can call from anywhere ends up called from
+everywhere, and then your business logic knows about your wiring. A toolkit small enough to read
+on a coffee break is also small enough to trust.
 
 ---
 
@@ -110,7 +110,9 @@ by searching for one decorator, and nothing joins the party because its name hap
 
 A consumer marks its `__init__` with `@Invert()`. Every constructor parameter whose type hint is a
 `@Port` is resolved from the process-wide `Idunn()` container when the constructor runs, assigned to
-`self.<name>`, and forwarded into the body.
+`self.<name>`, and forwarded into the body. A consumer that is a function, or a method, gets the
+same treatment at call time without the assignment: the ports arrive as keyword arguments, and
+nothing outlives the call unless the function keeps it.
 
 ```python
 from idunn import Invert
@@ -120,23 +122,33 @@ class Service:
   logger: LoggerPort  # declared for the type checker; @Invert assigns it
 
   @Invert()
-  def __init__(self, logger: LoggerPort, name: str) -> None:
+  def __init__(self, name: str, *, logger: LoggerPort) -> None:
     self.name = name  # self.logger is injected and assigned for you
 
   def run(self) -> None:
     self.logger.write(f'{self.name} started')
 ```
 
+```python
+@Invert()
+def audit(event: str, *, logger: LoggerPort) -> None:
+  logger.write(event)
+
+
+audit('login')  # logger is resolved and passed in; audit('login', logger=fake) skips that
+```
+
 Three properties make this pleasant to live with:
 
-- **A caller-supplied argument always wins.** `Service(logger=fake_logger, name='t')` skips
-  injection for `logger`, so the class stays trivially testable without any container at all.
+- **A caller-supplied argument always wins.** `Service('t', logger=fake_logger)` skips
+  injection for `logger`, so the class stays trivially testable without any container at all, and
+  so does a function.
 - **Resolution is recursive.** If the chosen adapter's own constructor takes `@Port` parameters,
   those resolve first, all the way down.
 - **You never call the container.** No `resolve`, no locator, no wiring code in business logic.
 
-The one courtesy asked in return: pass plain arguments by keyword. A positional argument fills the
-next parameter in line, and `@Invert` is not going to argue with you about whether it was a port.
+The one courtesy asked in return: ports go after `*`. Keyword-only means a positional argument can
+never land in one, and `@Invert()` refuses the declaration otherwise.
 
 ---
 
@@ -176,7 +188,7 @@ class Service:
   logger: LoggerPort  # assigned by @Invert
 
   @Invert()
-  def __init__(self, logger: LoggerPort) -> None:
+  def __init__(self, *, logger: LoggerPort) -> None:
     pass
 
 
@@ -206,7 +218,7 @@ class Auditor:
   logger: LoggerPort  # assigned by @Invert
 
   @Invert(keys={'logger': 'cloud'})
-  def __init__(self, logger: LoggerPort) -> None:
+  def __init__(self, *, logger: LoggerPort) -> None:
     pass
 ```
 
@@ -245,7 +257,7 @@ inside an adapter's own constructor.
 ```python
 class Service:
   @Invert()
-  def __init__(self, logger: LoggerPort | None = None) -> None:
+  def __init__(self, *, logger: LoggerPort | None = None) -> None:
     self.logger = logger  # None if nothing satisfies LoggerPort
 ```
 
@@ -265,10 +277,10 @@ construction during decoration or discovery, no field or setter injection, and n
 [`ADVANCED.md`](./ADVANCED.md#limitations-and-non-features).
 
 Each "no" removes a way for wiring to become implicit, surprising or hard to trace. Injection
-happens at exactly one moment, when an `@Invert()` constructor runs, and registration happens for
-exactly one reason, a decorator was applied and discovered. When something is wired wrong, there
-are two places to look, not twenty. That short list *is* the feature: as simple as possible, and
-not one apple simpler.
+happens at exactly one moment, when an `@Invert()` constructor or function runs, and registration
+happens for exactly one reason, a decorator was applied and discovered. When something is wired
+wrong, there are two places to look, not twenty. That short list *is* the feature: as simple as
+possible, and not one apple simpler.
 
 ---
 

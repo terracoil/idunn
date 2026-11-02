@@ -13,7 +13,7 @@ from threading import Barrier, Thread
 import pytest
 from idunn import DiscoveryError, Idunn, ReportMap
 
-from _support import PackageWriter
+from _support import PackageWriter, Resolve
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -69,7 +69,7 @@ class SamplePackage:
   def take_apple(package: str) -> str:
     """Resolve the sample port through the singleton and pick an apple."""
     ports = importlib.import_module(f'{package}.ports')
-    basket = Idunn()._inject(ports.AppleBasketPort)
+    basket = Resolve.port(ports.AppleBasketPort)
     return str(basket.take_apple())
 
 

@@ -1,6 +1,9 @@
-"""Engine-level resolution through ``Wiring``: selection, lifecycles, optional ports, cycles."""
+"""Engine-level resolution through ``Wiring``: selection, lifecycles, optional ports, cycles, plans.
+Adapter constructors decorated with ``@Invert`` get their own keys and map honoured here, while
+undecorated ones resolve unkeyed, and each adapter's plan is worked out once until ``clear()``.
+"""
 
-from typing import Protocol
+from typing import Any, Protocol, cast
 
 import pytest
 from idunn import (
@@ -9,6 +12,7 @@ from idunn import (
   InjectionCycleError,
   InvalidAdapterError,
   InvalidPortError,
+  Invert,
   LifecycleEnum,
   MissingTypeHintError,
   Port,
@@ -500,3 +504,181 @@ def test_resolving_an_undecorated_protocol_subclass_of_a_port_is_rejected() -> N
 
   with pytest.raises(InvalidPortError):
     table.resolve(LouderGreeterPort)
+
+
+def test_an_optional_adapter_parameter_without_a_default_gets_none_when_absent() -> None:
+  table = Wiring()
+
+  @Port
+  class SidecarPort(Protocol):
+    def ping(self) -> str: ...
+
+  @Port
+  class ServicePort(Protocol):
+    def run(self) -> str: ...
+
+  @Adapter(ServicePort)
+  class ServiceAdapter(ServicePort):
+    def __init__(self, sidecar: SidecarPort | None) -> None:
+      self.sidecar = sidecar
+
+    def run(self) -> str:
+      return 'run'
+
+  table.register_adapter(ServiceAdapter)
+
+  assert table.resolve(ServicePort).sidecar is None
+
+
+@Port
+class NotifierPort(Protocol):
+  def send(self) -> str: ...
+
+
+@Port
+class ReminderPort(Protocol):
+  def remind(self) -> str: ...
+
+
+# One port, an unkeyed email adapter and a keyed sms one: the silent-wrong-injection setup.
+@Adapter(NotifierPort)
+class EmailNotifier:
+  def send(self) -> str:
+    return 'email'
+
+
+@Adapter(NotifierPort, key='sms')
+class SmsNotifier:
+  def send(self) -> str:
+    return 'sms'
+
+
+class Engine:
+  """Builds a :class:`Wiring` with adapters already registered."""
+
+  @staticmethod
+  def of(*adapters: type[Any]) -> Wiring:
+    """Return a fresh engine with ``adapters`` registered."""
+    table = Wiring()
+    for adapter in adapters:
+      table.register_adapter(adapter)
+    return table
+
+
+def test_an_adapter_constructor_keyed_with_invert_gets_its_keyed_dependency() -> None:
+  @Adapter(ReminderPort)
+  class Reminder:
+    notifier: NotifierPort
+
+    @Invert(keys={'notifier': 'sms'})
+    def __init__(self, *, notifier: NotifierPort) -> None:
+      pass
+
+    def remind(self) -> str:
+      return self.notifier.send()
+
+  # 1.x handed this constructor the unkeyed email adapter: wrong, and silent about it.
+  table = Engine.of(EmailNotifier, SmsNotifier, Reminder)
+
+  assert table.resolve(ReminderPort).remind() == 'sms'
+
+
+def test_an_adapter_constructor_with_an_explicit_map_gets_its_dependency() -> None:
+  @Adapter(ReminderPort)
+  class Reminder:
+    @Invert({'notifier': NotifierPort})
+    def __init__(self, *, notifier: object) -> None:
+      self._notifier = notifier
+
+    def remind(self) -> str:
+      return cast(NotifierPort, self._notifier).send()
+
+  table = Engine.of(EmailNotifier, Reminder)
+
+  assert table.resolve(ReminderPort).remind() == 'email'
+
+
+def test_plain_invert_and_undecorated_adapter_constructors_resolve_unkeyed() -> None:
+  @Adapter(ReminderPort)
+  class PlainReminder:
+    @Invert()
+    def __init__(self, *, notifier: NotifierPort) -> None:
+      self._notifier = notifier
+
+    def remind(self) -> str:
+      return self._notifier.send()
+
+  @Adapter(ReminderPort, key='bare')
+  class BareReminder:
+    def __init__(self, notifier: NotifierPort) -> None:
+      self._notifier = notifier
+
+    def remind(self) -> str:
+      return self._notifier.send()
+
+  keyed_only = Engine.of(SmsNotifier, PlainReminder, BareReminder)
+  both = Engine.of(SmsNotifier, EmailNotifier, PlainReminder, BareReminder)
+
+  # A keyed adapter never sneaks into a constructor that did not ask for it by name.
+  with pytest.raises(AdapterNotFoundError):
+    keyed_only.resolve(ReminderPort)
+  with pytest.raises(AdapterNotFoundError):
+    keyed_only.resolve(ReminderPort, key='bare')
+  assert both.resolve(ReminderPort).remind() == 'email'
+  assert both.resolve(ReminderPort, key='bare').remind() == 'email'
+
+
+def test_a_cycle_through_a_keyed_dependency_is_still_a_cycle() -> None:
+  @Port
+  class EggPort(Protocol):
+    pass
+
+  @Port
+  class HenPort(Protocol):
+    pass
+
+  @Adapter(EggPort, key='first')
+  class Egg:
+    def __init__(self, hen: HenPort) -> None:
+      self.hen = hen
+
+  @Adapter(HenPort)
+  class Hen:
+    @Invert(keys={'egg': 'first'})
+    def __init__(self, *, egg: EggPort) -> None:
+      pass
+
+  table = Engine.of(Egg, Hen)
+
+  with pytest.raises(InjectionCycleError) as cycle:
+    table.resolve(HenPort)
+
+  local = f'{__name__}.test_a_cycle_through_a_keyed_dependency_is_still_a_cycle.<locals>'
+  assert str(cycle.value).endswith(f'{local}.Hen -> {local}.Egg -> {local}.Hen')
+
+
+def test_an_adapter_plan_is_made_once_and_forgotten_on_clear() -> None:
+  table = Engine.of(EmailNotifier)
+
+  table.resolve(NotifierPort)
+  plan = table.resolver._plans[EmailNotifier]
+  table.resolve(NotifierPort)
+
+  assert table.resolver._plans[EmailNotifier] is plan
+  table.resolver.clear()
+  assert table.resolver._plans == {}
+
+
+def test_a_positional_only_port_on_an_adapter_raises_type_error() -> None:
+  @Adapter(ReminderPort)
+  class Reminder:
+    def __init__(self, notifier: NotifierPort, /) -> None:
+      self._notifier = notifier
+
+    def remind(self) -> str:
+      return self._notifier.send()
+
+  table = Engine.of(EmailNotifier, Reminder)
+
+  with pytest.raises(TypeError, match=r'Reminder\.notifier is a positional-only port'):
+    table.resolve(ReminderPort)

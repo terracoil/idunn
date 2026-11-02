@@ -12,7 +12,10 @@ from .errors import (
   InvalidPortError,
   MissingTypeHintError,
 )
+from .function_shape import FunctionShape
+from .invert_declaration import InvertDeclaration
 from .lifecycle_enum import LifecycleEnum
+from .parameter_plan import ParameterPlan
 from .port_binding import PortBinding
 from .report import ReportMap
 
@@ -22,12 +25,15 @@ __all__ = (
   'AdapterNotFoundError',
   'Catalog',
   'DiscoveryError',
+  'FunctionShape',
   'IdunnError',
   'InjectionCycleError',
   'InvalidAdapterError',
   'InvalidPortError',
+  'InvertDeclaration',
   'LifecycleEnum',
   'MissingTypeHintError',
+  'ParameterPlan',
   'PortBinding',
   'ReportMap',
   'SlotKey',

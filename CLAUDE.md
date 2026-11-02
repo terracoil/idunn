@@ -37,8 +37,8 @@ Idunn is a constructor-time IoC toolkit: **Port → Adapter → `@Invert` consum
 | Layer | Holds | May import |
 |-------|-------|------------|
 | `idunn/app/` | `Port` (`port.py`), `Adapter` (`adapter.py`), `Invert` (`invert.py`), `Idunn` facade (`idunn.py`) | anything |
-| `idunn/internal/` | `InversionMapper`, `InversionResolver`, `InversionValidator`, `AutoDiscovery`, `BootstrapGate`, `BootstrapFlight`, `ReportMerger`, `DecoratorSupport`, `PortRegistry` | domain, util |
-| `idunn/domain/` | frozen dataclasses (`AdapterDeclaration`, `AdapterMetadata`, `Catalog`, `PortBinding`), `LifecycleEnum`, `ReportMap` TypedDict, the `IdunnError` hierarchy | util |
+| `idunn/internal/` | `InversionMapper`, `InversionResolver`, `InversionValidator`, `ConstructorPlanner`, `LazyPlan`, `AutoDiscovery`, `BootstrapGate`, `BootstrapFlight`, `ReportMerger`, `DecoratorSupport`, `PortRegistry` | domain, util |
+| `idunn/domain/` | frozen dataclasses (`AdapterDeclaration`, `AdapterMetadata`, `Catalog`, `FunctionShape`, `InvertDeclaration`, `ParameterPlan`, `PortBinding`), `LifecycleEnum`, `ReportMap` TypedDict, the `IdunnError` hierarchy | util |
 | `idunn/util/` | `Environment`, `ImportContext`, `MetaSingleton`, `QualifiedName` | nothing internal |
 
 No modules may live at `idunn/` root besides `__init__.py`. Cross-package imports go through each
@@ -55,11 +55,11 @@ pins this set, so changing it means changing that test. The engine classes are n
 ### Key invariants
 
 - **Decorators only attach metadata; nothing is constructed until an `@Invert`-decorated `__init__`
-  runs.** `@Port` records the Protocol in `PortRegistry` (a `WeakSet` keyed by class identity) and
-  makes it `runtime_checkable`; `@Adapter` stores a frozen `AdapterDeclaration` on the class;
-  `autodiscover()` only imports modules and registers. `@Adapter` refuses a class whose own
-  `__dict__` already holds a declaration (stacked decorators raise `InvalidAdapterError`); a
-  decorated subclass is fine.
+  or function runs.** `@Port` records the Protocol in `PortRegistry` (a `WeakSet` keyed by class
+  identity) and makes it `runtime_checkable`; `@Adapter` stores a frozen `AdapterDeclaration` on
+  the class; `@Invert` plans and wraps; `autodiscover()` only imports modules and registers.
+  `@Adapter` refuses a class whose own `__dict__` already holds a declaration (stacked decorators
+  raise `InvalidAdapterError`); a decorated subclass is fine.
 - **Error messages name things through `QualifiedName.of`**, which renders a class or function as
   `module.QualName` and anything else, parameterized aliases such as `Repo[User]` included, as its
   `repr`. So `Port(5)` raises `InvalidPortError` rather than an `AttributeError` from the message
@@ -73,8 +73,10 @@ pins this set, so changing it means changing that test. The engine classes are n
   undecorated Protocol that extends one, is not a port (`@Adapter(...)` and resolution raise
   `InvalidPortError`). `Port.__new__` still reads the private `typing` flag `_is_protocol`, because
   the public `typing.is_protocol` is 3.13+ and the floor is 3.11.
-- **There is no public `resolve()` or `register()`.** `@Invert` reaches the engine through the private
-  `Idunn()._inject` / `Idunn()._has`. This removal is deliberate (`docs/ADVANCED.md`); do not add one.
+- **There is no public `resolve()` or `register()`.** `@Invert` reaches the engine through one
+  private door, `Idunn()._inject(parameter)`, which takes a `ParameterPlan` and leaves tolerance to
+  the resolver; tests reach it through `Resolve.port` in `tests/_support.py`. This removal is
+  deliberate (`docs/ADVANCED.md`); do not add one.
 - **`Idunn().bootstrap(root)` is `autodiscover` run once per root through `BootstrapGate`** (cache
   keyed by root only, so repeat calls ignore their options; failures are not cached). Libraries
   call it from their entry points instead of at import. Two rules keep it deadlock-free: no Idunn
@@ -95,29 +97,51 @@ pins this set, so changing it means changing that test. The engine classes are n
   cache (so the conftest fixture isolates it) by swapping in a new generation, reports, flights and
   carried runs as one tuple; every run captures it once at entry, so a stale run lands in the
   discarded one.
-- **Keys apply only at `@Invert` consumers.** `@Invert(keys={'param': 'name'})` selects a keyed
-  adapter for that parameter. When the resolver recursively builds an adapter's own constructor
-  dependencies it always resolves unkeyed (`key=None`), so keyed adapters never satisfy
-  adapter-to-adapter dependencies.
+- **Keys apply wherever `@Invert(keys=...)` decorates something**: a consumer's constructor, an
+  adapter's constructor, or a function. The resolver honours an adapter constructor's own keys and
+  explicit map (it reads the `InvertDeclaration` stamped on the wrapper as `__idunn_invert__`), so
+  the wrapper then finds every port supplied. An undecorated or plain `@Invert()` adapter
+  constructor resolves unkeyed, so a keyed adapter never sneaks into a constructor that did not ask
+  for it by name.
 - **Optional dependencies** are a parameter typed `Port | None` or any `@Port` parameter with a
-  default: a missing adapter yields the default/`None` instead of `AdapterNotFoundError`. The
-  annotation→port logic is shared (`DecoratorSupport.port_from_annotation`), so `@Invert` consumers
-  and adapter constructors behave identically.
-- **`@Invert` details.** It assigns `self.<name>` for every port parameter, injected or
-  caller-supplied, before the body runs. A port annotation beats an explicit `@Invert({...})` entry
-  for the same parameter (`{**explicit, **discovered}`). Arguments bind with `bind_partial`, so a
-  positional plain argument lands in a port parameter if one comes first.
+  default: a missing adapter yields the default/`None` instead of `AdapterNotFoundError`. One
+  planner (`ConstructorPlanner`, on `DecoratorSupport.port_from_annotation`) and one resolver path
+  (`InversionResolver._inject`, behind `inject`) serve `@Invert` functions and adapter
+  constructors alike, so they cannot disagree.
+- **`@Invert` details.** Two forms, chosen by the function's own name (`__code__.co_name`): on an
+  `__init__` it assigns `self.<name>` for every port parameter, injected or caller-supplied, before
+  the body runs; on anything else (function, method, static method) it passes the ports as keyword
+  arguments and assigns nothing anywhere. Shape rules come from `__code__` via `FunctionShape`, so
+  they fire at decoration on every version and never evaluate a hint: a mapped or keyed name must
+  be a named parameter (not the instance slot, `*args` or `**kwargs`) and keyword-only, a second
+  `@Invert` on one function raises, as do anything without a code object and a `staticmethod` or
+  `classmethod` object, since `@Invert()` must sit beneath those (all `TypeError`).
+  `Invert.__init__` refuses non-port map values (`InvalidPortError`) and non-`str` keys
+  (`TypeError`). Annotation rules need `get_type_hints`: a map entry on a port-annotated parameter
+  and a key on a non-port raise `InvalidPortError`, at decoration when the hints resolve, else at
+  the first call (`LazyPlan` in the wrapper closure swallows only `NameError`, and never caches a
+  failure). Port parameters are keyword-only, enforced at decoration (annotation-based checks at
+  the first call if a hint is a forward reference; `TypeError`) and at call time: a call passing
+  more positional arguments than `FunctionShape.positional_limit` raises `TypeError` before
+  anything is injected, so ports arrive only by keyword and the wrapper reads them from `kwargs`
+  alone. `ConstructorPlanner.KEYWORD_ONLY_PORTS` is where the rule lives, not a toggle: the
+  wrappers depend on it. Undecorated adapter constructors are exempt, since the resolver passes
+  every port by keyword.
 - **Resolved instances are structurally checked** against the port (`isinstance` on the
   runtime-checkable Protocol) after construction; a mismatch raises `InvalidAdapterError`.
 
 ### Resolution flow
 
 `InversionResolver._resolve` → `InversionMapper.select` (a copy-on-write `(port, key)` index,
-filtered by environment) → `_construct` inspects the adapter's `__init__` and recursively resolves
-each `@Port`-typed parameter. Any parameter without a default that is not a `@Port` (annotated or
-not) raises `MissingTypeHintError`; `*args`/`**kwargs` are skipped; re-entry into an adapter
-already on the construction stack raises `InjectionCycleError`. `SINGLETON` adapters are cached per
-adapter class; `TRANSIENT` (the default) rebuild every time.
+filtered by environment) → `_build` fills the adapter's plan, a `tuple[ParameterPlan, ...]` from
+`ConstructorPlanner.plan_adapter`, cached per adapter class in `_plans` on first build (no lock: a
+racing duplicate is identical; failures are not cached; `clear()` swaps in a new dict), each
+parameter through `_inject` and so recursively through `_resolve`. Planning an adapter raises
+`MissingTypeHintError` for any named parameter without a default that is not a port (annotated or
+not), and `TypeError` for a positional-only port, since the resolver passes keywords; `*args` and
+`**kwargs` are skipped, and a constructor with no code object (`object.__init__`) has nothing to
+inject. Re-entry into an adapter already on the construction stack raises `InjectionCycleError`.
+`SINGLETON` adapters are cached per adapter class; `TRANSIENT` (the default) rebuild every time.
 
 The index is a frozen `Catalog` (domain) that the mapper replaces whole. Readers (`find`, `select`,
 `bindings`, `ports`) read `self._catalog` once and never lock, so `describe()` comes from one
@@ -166,8 +190,9 @@ newly registered by that call.
 - `tests/conftest.py` has an autouse fixture that calls `Idunn().reset(environment='local')` before
   and after every test; rely on it rather than resetting by hand.
 - Because the facade has no register/resolve, engine tests use the seams in `tests/_support.py`:
-  `Wiring` (a standalone mapper + resolver) for resolution tests, and `Container.install(...)` to push
-  adapters into the singleton, as one batch, for `@Invert` integration tests.
+  `Wiring` (a standalone mapper + resolver) for resolution tests, `Container.install(...)` to push
+  adapters into the singleton, as one batch, for `@Invert` integration tests, and `Resolve.port`
+  to build one port through the facade's private door as a required `ParameterPlan`.
 - Tests and `examples/` are type-checked under strict mypy; keep them fully annotated.
 - Tests import public names from `idunn` exactly as users do, and so do the generated-module source
   strings that tests write to `tmp_path`. Non-public names come from the highest re-exporting layer
