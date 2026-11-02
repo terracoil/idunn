@@ -10,9 +10,9 @@ from .lifecycle_enum import LifecycleEnum
 
 @dataclass(frozen=True, slots=True)
 class AdapterMetadata:
-  """One registered adapter: its declaration, the class it labels, and when it arrived.
-  ``order`` is a defensive tie-breaker for selection. The registration validator already forbids
-  two candidates for the same slot, so in practice it has never had a tie to break.
+  """One registered adapter: its declaration plus the class it labels.
+  There is no arrival order on purpose. Validation never lets two adapters compete for one slot
+  in one environment, and the catalog's insertion order already remembers who came first.
   """
 
   adapter: type[Any]
@@ -20,7 +20,6 @@ class AdapterMetadata:
   key: str | None
   lifecycle: LifecycleEnum
   envs: frozenset[str] | None
-  order: int
 
   def environment_label(self) -> str:
     """Return the environments as ``ci,test`` for ``describe()``, or ``*`` for everywhere."""

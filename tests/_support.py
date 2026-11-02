@@ -51,10 +51,8 @@ class Container:
 
   @staticmethod
   def install(*adapters: type[Any]) -> None:
-    """Register each adapter into the singleton's catalog."""
-    mapper = Idunn()._mapper
-    for adapter in adapters:
-      mapper.register_adapter(adapter)
+    """Register the adapters into the singleton's catalog as one batch: all of them, or none."""
+    Idunn()._mapper.register_batch(adapters=adapters)
 
 
 class PackageWriter:

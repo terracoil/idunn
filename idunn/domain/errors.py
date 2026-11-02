@@ -18,8 +18,8 @@ class InvalidPortError(IdunnError):
 class InvalidAdapterError(IdunnError):
   """Raised when an adapter cannot be trusted with its port.
   That covers ``@Adapter`` on a non-class, ``@Adapter`` applied twice to one class, two adapters
-  sharing a port and key in overlapping environments, and a built instance that does not satisfy
-  its port.
+  sharing a port and key in overlapping environments (the batch that hits it registers nothing),
+  and a built instance that does not satisfy its port.
   """
 
 

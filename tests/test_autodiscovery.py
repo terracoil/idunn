@@ -9,7 +9,7 @@ from textwrap import dedent
 from types import ModuleType
 
 import pytest
-from idunn import AdapterNotFoundError, DiscoveryError, Idunn
+from idunn import AdapterNotFoundError, DiscoveryError, Idunn, InvalidAdapterError
 
 from _support import PackageWriter
 
@@ -376,6 +376,25 @@ def test_autodiscover_strict_raises_before_registering_anything(writer: PackageW
 
   # Everything imports before anything registers, so a failure leaves the catalog untouched.
   assert Idunn()._mapper.ports == frozenset()
+
+
+def test_autodiscover_collision_registers_nothing_from_the_run(writer: PackageWriter) -> None:
+  pkg = 'disc_collision'
+  writer.package(
+    pkg,
+    {
+      'ports.py': Sources.PORT,
+      'a_golden.py': Sources.adapter(pkg),
+      'b_rival.py': Sources.adapter(pkg, name='RivalBasket', apple='rival'),
+    },
+  )
+
+  with pytest.raises(InvalidAdapterError, match=f'{pkg}.a_golden.GoldenBasket and .*RivalBasket'):
+    Idunn().autodiscover(pkg)
+
+  # One batch, validated whole: the port and the first module's adapter never registered either.
+  assert Idunn()._mapper.ports == frozenset()
+  assert Idunn().describe() == 'Environment: local'
 
 
 @pytest.mark.parametrize('strict', [True, False])

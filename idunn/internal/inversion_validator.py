@@ -44,16 +44,16 @@ class InversionValidator:
     cls,
     *,
     metadata: AdapterMetadata,
-    existing: tuple[AdapterMetadata, ...],
+    slot: tuple[AdapterMetadata, ...],
   ) -> None:
-    """Reject a second adapter sharing a port+key that is active in an overlapping env."""
-    for other in existing:
-      shares_binding = (
-        other.adapter is not metadata.adapter
-        and other.port is metadata.port
-        and other.key == metadata.key
-      )
-      if shares_binding and cls._environments_overlap(other.envs, metadata.envs):
+    """Reject a second adapter in ``metadata``'s ``(port, key)`` slot active in an overlapping env.
+    ``slot`` holds only adapters already sharing that port and key, so the check costs the size of
+    one slot, not the size of the catalog. A class is never its own rival.
+    """
+    for other in slot:
+      if other.adapter is not metadata.adapter and cls._environments_overlap(
+        other.envs, metadata.envs
+      ):
         message = (
           f'Duplicate adapter key for {QualifiedName.of(metadata.port)} key={metadata.key!r} '
           f'in overlapping environments: {QualifiedName.of(other.adapter)} and '

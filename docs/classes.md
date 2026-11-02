@@ -106,8 +106,8 @@ are at least required to agree on the borders.
 `__init__.py` is the barrel that re-exports the public names in its `__all__`: the three decorators
 (`Port`, `Adapter`, `Invert`), the `Idunn` facade, `LifecycleEnum`, the `ReportMap` TypedDict, and
 the full `IdunnError` hierarchy. It contains no logic of its own (Public, Passive). Everything else
-stays home: from `domain/`, the `AdapterDeclaration`, `AdapterMetadata`, `PortBinding` and
-`RegistrationKey` types; all of `internal/` (`InversionMapper`, `InversionResolver`,
+stays home: from `domain/`, the `AdapterDeclaration`, `AdapterMetadata`, `Catalog` and
+`PortBinding` types; all of `internal/` (`InversionMapper`, `InversionResolver`,
 `InversionValidator`, `AutoDiscovery`, `DecoratorSupport`, `PortRegistry`); and all of `util/`
 (`Environment`, `MetaSingleton`, `QualifiedName`). What users never import, nobody has to keep
 compatible.
@@ -133,10 +133,10 @@ compatible.
 | File | Class | Nature | Purpose | Audience | Splittable? | Generic utility? |
 |------|-------|--------|---------|----------|-------------|------------------|
 | `lifecycle_enum.py` | `LifecycleEnum` | Passive | `StrEnum` of adapter lifecycles, `SINGLETON` and `TRANSIENT`, with lowercase values so `@Adapter(lifecycle='singleton')` also works. Passed by users to `@Adapter`. | Public | — | — |
-| `registration_key.py` | `RegistrationKey` | Passive | Frozen `(port, key)` pair, the second half of the `InversionMapper` selection-cache key `(environment, RegistrationKey)`. | Hidden | — | Minor: a generic frozen composite key. |
 | `report.py` | `ReportMap` | Passive | `TypedDict` returned by `autodiscover` and `bootstrap`: string tuples of module names and qualified class names (`root_package`, `imported_modules`, `skipped_modules`, `registered_ports`, `registered_adapters`). The two `registered_*` keys list only what that call newly registered. A plain dict, no `Any`. | Public | — | — |
 | `adapter_declaration.py` | `AdapterDeclaration` | Passive | Frozen carrier of the options captured by `@Adapter` (`port`/`key`/`lifecycle`/`envs`), made before the decorator has even seen its class; the only consumer is `InversionMapper` at registration time. | Hidden | — | — |
-| `adapter_metadata.py` | `AdapterMetadata` | Passive (with helpers) | Frozen record of one *registered* adapter, plus `is_available_in()` and `environment_label()`. Its `order` field is a defensive tie-breaker that validation never lets come into play. Carried inside `PortBinding`. | Hidden | — | — |
+| `adapter_metadata.py` | `AdapterMetadata` | Passive (with helpers) | Frozen record of one *registered* adapter, plus `is_available_in()` and `environment_label()`. No arrival order: validation never lets two adapters compete for one slot in one environment, and the catalog's insertion order already remembers who came first. Indexed by `Catalog` and carried inside `PortBinding`. | Hidden | — | — |
+| `catalog.py` | `Catalog` | Passive (with helpers) | Frozen, copy-on-write snapshot of every registration: `ports`, `adapters` (insertion order is registration order) and `slots`, a read-only `(port, key)` → adapters index (`SlotKey` is its alias). `find()` filters one slot by environment; `empty()` and `freeze()` build one. `InversionMapper` swaps in a whole new catalog per batch, so readers never lock and never see half a batch. | Hidden | — | Minor: the copy-on-write snapshot pattern. |
 | `port_binding.py` | `PortBinding` | Passive | Frozen snapshot of one port: its `selected` adapter for an environment (or `None`) and all its `adapters`. Built by `InversionMapper.bindings()` as the single source behind `describe()`, which returns a string, so the type itself never reaches users. | Hidden | — | — |
 
 ---
@@ -152,7 +152,7 @@ covers the family.
 |-------|-------------|
 | `IdunnError` | Base for every Idunn error. |
 | `InvalidPortError` | `@Port` is applied to anything but a Protocol (`Port(5)` included), an adapter names an unmarked port, or a non-port is resolved (for example through an explicit `@Invert` map). |
-| `InvalidAdapterError` | `@Adapter` is applied to a non-class or twice to one class, two adapters share a port and key in overlapping environments, or a built instance does not satisfy its port. |
+| `InvalidAdapterError` | `@Adapter` is applied to a non-class or twice to one class, two adapters share a port and key in overlapping environments (the batch that hits it registers nothing), or a built instance does not satisfy its port. |
 | `AdapterNotFoundError` | No active adapter is registered for a requested port and the parameter is not optional. |
 | `DiscoveryError` | A module below the discovery root fails to import and `strict=True`, or, whatever `strict` says, the root has a `__path__` entry that is not a directory (a zip). The root's own import errors propagate unwrapped. |
 | `MissingTypeHintError` | An adapter constructor parameter without a default has no annotation, or one that is not a port. |
@@ -167,10 +167,10 @@ covers the family.
 | File | Class | Nature | Purpose | Audience | Splittable? | Generic utility? |
 |------|-------|--------|---------|----------|-------------|------------------|
 | `app/idunn.py` | `Idunn` | Active | Thin **facade** and process-wide singleton (`metaclass=MetaSingleton`); `Idunn()` takes no arguments, so the environment is chosen by `IDUNN_ENV` or `reset(environment=...)`. Public surface is `autodiscover()`, `bootstrap()` (a locked once-per-root `autodiscover` for library entry points), `reset()`, `describe()` and the read-only `environment` property; owns one `InversionMapper` and one `InversionResolver` and delegates. `@Invert` reaches resolution via the private `_inject` / `_has`. No public `resolve`/`register_*`, by design. | Public | — | — |
-| `internal/inversion_mapper.py` | `InversionMapper` | Active | The catalog: registers ports and adapters, selects by key and environment, memoizes an `(environment, RegistrationKey) → AdapterMetadata` cache (dropped when an adapter registers or on `clear()`), and emits `PortBinding` snapshots. Its `ports` property exists for the tests. | Hidden | — | — |
+| `internal/inversion_mapper.py` | `InversionMapper` | Active | Owns the `Catalog`. Writes go through `register_batch` (ports, then adapters) under one write lock: copy once, skip what is already registered, validate each new adapter against its slot, swap once, so a batch lands whole or not at all; `register_port`/`register_adapter` are batches of one. Reads (`find`, `select`, `bindings`, and the `catalog`/`ports` properties the tests use) take one snapshot and never lock, and `bindings()` emits the `PortBinding`s behind `describe()`. | Hidden | — | — |
 | `internal/inversion_resolver.py` | `InversionResolver` | Active | The construction engine: recursive constructor-time resolution, the in-progress cycle stack, and the `SINGLETON` instance cache. Asks `InversionMapper` for selections, resolves adapter-to-adapter dependencies unkeyed, and honors optional (`Port \| None` or defaulted) constructor params via `DecoratorSupport.port_from_annotation`. | Hidden | — | — |
-| `internal/inversion_validator.py` | `InversionValidator` | Active (stateless) | Stateless checks: adapter-class validity (a backstop for declarations attached without `@Adapter`), duplicate registration in overlapping envs, and instance-satisfies-port. Called by the mapper and resolver; raises `IdunnError`s. Not re-exported from `idunn.internal`. | Hidden | — | — |
-| `internal/auto_discovery.py` | `AutoDiscovery` | Active | Imports every module under a dotted root name (skipping `__main__`, non-identifier parts, test modules and `exclude` patterns; the running `__main__` is reused), then registers the decorated classes into an `InversionMapper`, ports first, and returns a `ReportMap`. A root whose `__path__` is not a directory (a zip) raises `DiscoveryError` whatever `strict` says; root import errors are not wrapped. Reached via `Idunn().autodiscover`. | Hidden | — | Yes: the module-scan helpers (`_module_names`, `_path_entries`, `_relative_parts`, `_is_excluded`, `_load`) are a reusable "find and import dotted modules under a package" utility. |
+| `internal/inversion_validator.py` | `InversionValidator` | Active (stateless) | Stateless checks: adapter-class validity (a backstop for declarations attached without `@Adapter`), duplicates within one `(port, key)` slot in overlapping envs (checked against that slot only, so validation stays linear), and instance-satisfies-port. Called by the mapper and resolver; raises `IdunnError`s. Not re-exported from `idunn.internal`. | Hidden | — | — |
+| `internal/auto_discovery.py` | `AutoDiscovery` | Active | Imports every module under a dotted root name (skipping `__main__`, non-identifier parts, test modules and `exclude` patterns; the running `__main__` is reused), then registers the decorated classes into an `InversionMapper` as one all-or-nothing batch, ports first, and returns a `ReportMap`. A root whose `__path__` is not a directory (a zip) raises `DiscoveryError` whatever `strict` says; root import errors are not wrapped. Reached via `Idunn().autodiscover`. | Hidden | — | Yes: the module-scan helpers (`_module_names`, `_path_entries`, `_relative_parts`, `_is_excluded`, `_load`) are a reusable "find and import dotted modules under a package" utility. |
 | `internal/decorator_support.py` | `DecoratorSupport` | Active | Helpers shared by the decorators and the resolver: `extract_port_parameters()` (split type hints into ports and optional names for `@Invert`), `normalize_envs()` (collapse `envs` into a normalized `frozenset`, or `None`) and `port_from_annotation()` (resolve an annotation to `(port, optional)`, unwrapping `Port \| None`). | Hidden | — | Minor: tied to Idunn rules. |
 | `internal/port_registry.py` | `PortRegistry` | Active (process-wide state) | `WeakSet` of the Protocols decorated with `@Port`: `mark()` records one, `is_port()` checks exact class identity. Replaces a marker attribute, which Python 3.11 would count as a protocol member and so break structural adapters. Subclasses of a port are not ports. | Hidden | — | — |
 | `util/environment.py` | `Environment` | Active (value + logic) | Frozen value object holding a resolved env `name`, plus `current()` (resolve from argument, then `IDUNN_ENV`, then `local`) and `normalize()` (strip, lowercase, `_` to `-`, blank to `local`, then validate). Reached at `Idunn()` construction, on `reset()`, and when `@Adapter(envs=...)` is normalized. | Hidden | — | Yes: `normalize()` is a generic slug normalizer. |
@@ -203,9 +203,8 @@ is the README's `my_app` layout as a **discoverable package**, run from the repo
 
 - **The public surface is tight.** Top-level `idunn` exports only the three decorators, `Idunn`,
   `LifecycleEnum`, the `ReportMap` TypedDict, and the exception hierarchy. Nothing is Mixed: the
-  former in-between types (`RegistrationKey`, `AdapterDeclaration`, `AdapterMetadata`,
-  `PortBinding`) never reach users, because the facade returns strings and reports rather than
-  engine types.
+  engine-facing domain types (`AdapterDeclaration`, `AdapterMetadata`, `Catalog`, `PortBinding`)
+  never reach users, because the facade returns strings and reports rather than engine types.
 - **Candidates for promotion.** `PortBinding` is the obvious one. It is a read-only snapshot that
   could become a public introspection type if `describe()` ever grows a structured sibling. Until
   someone asks, it stays a string.

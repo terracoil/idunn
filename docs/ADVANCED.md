@@ -196,9 +196,10 @@ class FakePaymentAdapter(PaymentPort): ...
 ```
 
 Two adapters that share a port and key (unkeyed counts as the same "no key") and are both active in
-an overlapping environment raise `InvalidAdapterError` at registration. An env-agnostic adapter
-overlaps with everything. Idunn refuses to guess which apple you meant, and refuses at startup
-rather than at the first unlucky request.
+an overlapping environment raise `InvalidAdapterError` at registration, and the discovery run that
+hits the collision registers nothing at all. An env-agnostic adapter overlaps with everything.
+Idunn refuses to guess which apple you meant, and refuses at startup rather than at the first
+unlucky request.
 
 Two `@Adapter` lines on one class collide sooner still: the second raises `InvalidAdapterError` at
 import, because only one declaration could ever win, so one of the two lines was always wrong. A
@@ -241,9 +242,9 @@ Idunn().autodiscover(
   module raises `DiscoveryError` naming it and leaves the catalog untouched; `bootstrap` does not
   cache the failure. With `strict=False` the module is skipped and listed in `skipped_modules`. Only
   `Exception` is caught: a module that calls `sys.exit()` or parses `argv` at import raises
-  `SystemExit`, which is not swallowed. Prefer `exclude` for such modules. Registration, unlike
-  importing, is not all-or-nothing: if two adapters collide, the `InvalidAdapterError` propagates
-  and whatever registered before it stays registered.
+  `SystemExit`, which is not swallowed. Prefer `exclude` for such modules. Registration is
+  all-or-nothing too: each run validates everything it found as one batch, so a collision raises
+  `InvalidAdapterError` and leaves the catalog exactly as it was.
 - **Keep modules import-safe.** Everything under the root is imported at discovery, so module bodies
   should only define things. Work belongs behind `if __name__ == '__main__':` or in functions.
 - **Root must be importable.** Pass the package's dotted name exactly as you would `import` it; a
@@ -342,7 +343,7 @@ class below:
 | Class | Raised when |
 |---|---|
 | `InvalidPortError` | `@Port` is applied to anything but a Protocol (`Port(5)` included), an adapter names an unmarked port, or a non-port is resolved (say, through an explicit `@Invert` map). |
-| `InvalidAdapterError` | `@Adapter` is applied to a non-class or twice to one class, two adapters collide, or a built instance does not satisfy its port. |
+| `InvalidAdapterError` | `@Adapter` is applied to a non-class or twice to one class, two adapters collide (the discovery run that hits it registers nothing), or a built instance does not satisfy its port. |
 | `AdapterNotFoundError` | No active adapter exists for a requested port and the parameter is not optional. |
 | `DiscoveryError` | A module below the discovery root fails to import and `strict=True`, or the root package does not live in a directory (a zip, say), whatever `strict` says. |
 | `MissingTypeHintError` | An adapter constructor parameter without a default has no annotation, or one that is not a port. |
@@ -362,10 +363,11 @@ message names the culprit as `module.QualName`, so two `Feast`s in two modules a
 The limitations are prices paid for a single process-wide container:
 
 - **One container per process.** There is no second, independent `Idunn()`.
-- **Not thread-safe.** Only creating the singleton and the `bootstrap` guard are locked. The catalog
-  and the singleton cache are plain, unlocked state, because wiring is meant to happen once, on one
-  thread, at startup. Do that, then resolve; two threads racing to build the same `SINGLETON` for
-  the first time may each walk away with their own.
+- **Not fully thread-safe.** Creating the singleton, the `bootstrap` guard and registration are
+  locked, and the catalog is copy-on-write: a registration swaps in a whole new snapshot, so a
+  reader never sees half of one. The singleton cache is still plain, unlocked state, because wiring
+  is meant to happen once, on one thread, at startup. Do that, then resolve; two threads racing to
+  build the same `SINGLETON` for the first time may each walk away with their own.
 - **Test isolation is your job.** See [above](#test-isolation).
 
 The non-features are deliberate, so there is no point hunting for them:

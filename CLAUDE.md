@@ -38,7 +38,7 @@ Idunn is a constructor-time IoC toolkit: **Port → Adapter → `@Invert` consum
 |-------|-------|------------|
 | `idunn/app/` | `Port` (`port.py`), `Adapter` (`adapter.py`), `Invert` (`invert.py`), `Idunn` facade (`idunn.py`) | anything |
 | `idunn/internal/` | `InversionMapper`, `InversionResolver`, `InversionValidator`, `AutoDiscovery`, `DecoratorSupport`, `PortRegistry` | domain, util |
-| `idunn/domain/` | frozen dataclasses (`AdapterDeclaration`, `AdapterMetadata`, `PortBinding`, `RegistrationKey`), `LifecycleEnum`, `ReportMap` TypedDict, the `IdunnError` hierarchy | util |
+| `idunn/domain/` | frozen dataclasses (`AdapterDeclaration`, `AdapterMetadata`, `Catalog`, `PortBinding`), `LifecycleEnum`, `ReportMap` TypedDict, the `IdunnError` hierarchy | util |
 | `idunn/util/` | `Environment`, `MetaSingleton`, `QualifiedName` | nothing internal |
 
 No modules may live at `idunn/` root besides `__init__.py`. Cross-package imports go through each
@@ -97,13 +97,25 @@ pins this set, so changing it means changing that test. The engine classes are n
 
 ### Resolution flow
 
-`InversionResolver._resolve` → `InversionMapper.select` (env-filtered, memoized per
-`(environment, RegistrationKey)`, cache dropped on any adapter registration or `clear()`) →
-`_construct` inspects the adapter's `__init__` and recursively resolves each `@Port`-typed
-parameter. Any parameter without a default that is not a `@Port` (annotated or not) raises
-`MissingTypeHintError`; `*args`/`**kwargs` are skipped; re-entry into an adapter already on the
-construction stack raises `InjectionCycleError`. `SINGLETON` adapters
-are cached per adapter class; `TRANSIENT` (the default) rebuild every time.
+`InversionResolver._resolve` → `InversionMapper.select` (a copy-on-write `(port, key)` index,
+filtered by environment) → `_construct` inspects the adapter's `__init__` and recursively resolves
+each `@Port`-typed parameter. Any parameter without a default that is not a `@Port` (annotated or
+not) raises `MissingTypeHintError`; `*args`/`**kwargs` are skipped; re-entry into an adapter
+already on the construction stack raises `InjectionCycleError`. `SINGLETON` adapters are cached per
+adapter class; `TRANSIENT` (the default) rebuild every time.
+
+The index is a frozen `Catalog` (domain) that the mapper replaces whole. Readers (`find`, `select`,
+`bindings`, `ports`) read `self._catalog` once and never lock, so `describe()` comes from one
+snapshot. Every write is `register_batch` under the mapper's write lock: copy the catalog once,
+skip classes already registered (or repeated in the batch), validate each new adapter against its
+`(port, key)` slot only, and swap once; any error leaves the catalog untouched. `register_port`
+and `register_adapter` are batches of one. A batch costs one copy plus the slot sizes, so discovery
+is linear in the classes found, while a loop of single registrations is quadratic (only `Wiring`
+and tests do that; anything that registers many classes must batch them). The write lock is a
+plain `Lock` on purpose: a batch that re-entered registration would swap in a catalog built from a
+stale copy and lose the inner update, so a deadlock is the louder, better failure. Validation
+keeps at most one adapter per slot per environment, so there is no tie-breaker and no
+registration order beyond the catalog's insertion order.
 
 ### Adapter selection and environments
 
@@ -122,16 +134,17 @@ under `root` (the root included, namespace directories too), skipping `__main__`
 non-identifier parts, and test modules (`tests`, `test`, `test_*`, `*_test`, `conftest`) plus any
 `exclude` patterns (`fnmatchcase` on each dotted part below the root; user patterns add to the
 defaults). The module running as `__main__` is reused, never re-imported. All modules import first;
-then ports register across the whole set, then adapters, so a port first touched by an adapter is
-still reported as a port. A class counts only in the module that defines it (`__module__` filter,
-scanned via `vars()`); ports by `PortRegistry` identity, adapters by `__idunn_adapter__` in their
-*own* `__dict__`. `strict=True` raises `DiscoveryError` before anything registers; `strict=False`
-lists the module in `skipped_modules`; the root's own import errors propagate unwrapped regardless
-of `strict`. A root `__path__` entry that is not a directory (a zip) raises `DiscoveryError` before
-any submodule imports, whatever `strict` says. Registration is not atomic: an `InvalidAdapterError`
-mid-run leaves earlier registrations in place. The return value is a public `ReportMap` TypedDict of
-strings whose key set is pinned in `tests/test_public_surface.py`; its `registered_*` tuples list
-only classes newly registered by that call.
+then one `register_batch` folds ports across the whole set before adapters, so a port first touched
+by an adapter is still reported as a port. A class counts only in the module that defines it
+(`__module__` filter, scanned via `vars()`); ports by `PortRegistry` identity, adapters by
+`__idunn_adapter__` in their *own* `__dict__`. `strict=True` raises `DiscoveryError` before
+anything registers; `strict=False` lists the module in `skipped_modules`; the root's own import
+errors propagate unwrapped regardless of `strict`. A root `__path__` entry that is not a directory
+(a zip) raises `DiscoveryError` before any submodule imports, whatever `strict` says. Registration
+is atomic: each run validates one batch and swaps the catalog once, so an `InvalidAdapterError`
+leaves the catalog untouched. The return value is a public `ReportMap` TypedDict of strings whose
+key set is pinned in `tests/test_public_surface.py`; its `registered_*` tuples list only classes
+newly registered by that call.
 
 ## Testing conventions
 
@@ -139,7 +152,7 @@ only classes newly registered by that call.
   and after every test; rely on it rather than resetting by hand.
 - Because the facade has no register/resolve, engine tests use the seams in `tests/_support.py`:
   `Wiring` (a standalone mapper + resolver) for resolution tests, and `Container.install(...)` to push
-  adapters into the singleton for `@Invert` integration tests.
+  adapters into the singleton, as one batch, for `@Invert` integration tests.
 - Tests and `examples/` are type-checked under strict mypy; keep them fully annotated.
 - Tests import public names from `idunn` exactly as users do, and so do the generated-module source
   strings that tests write to `tmp_path`. Non-public names come from the highest re-exporting layer

@@ -2,6 +2,7 @@
 
 from .adapter_declaration import AdapterDeclaration
 from .adapter_metadata import AdapterMetadata
+from .catalog import Catalog, SlotKey
 from .errors import (
   AdapterNotFoundError,
   DiscoveryError,
@@ -13,13 +14,13 @@ from .errors import (
 )
 from .lifecycle_enum import LifecycleEnum
 from .port_binding import PortBinding
-from .registration_key import RegistrationKey
 from .report import ReportMap
 
 __all__ = (
   'AdapterDeclaration',
   'AdapterMetadata',
   'AdapterNotFoundError',
+  'Catalog',
   'DiscoveryError',
   'IdunnError',
   'InjectionCycleError',
@@ -28,6 +29,6 @@ __all__ = (
   'LifecycleEnum',
   'MissingTypeHintError',
   'PortBinding',
-  'RegistrationKey',
   'ReportMap',
+  'SlotKey',
 )

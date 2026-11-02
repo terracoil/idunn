@@ -278,13 +278,13 @@ not one apple simpler.
 
 `Idunn()` is a single process-wide container; call it a thousand times and you get back the same
 barrel of apples. That choice buys simplicity at a few honest prices: there is no second container,
-registration and resolution are not thread-safe, and test isolation is your job via
-`Idunn().reset()`. When you want to see the wired graph, `Idunn().describe()` returns a readable
-snapshot of the active bindings.
+resolution is not thread-safe, and test isolation is your job via `Idunn().reset()`. When you want
+to see the wired graph, `Idunn().describe()` returns a readable snapshot of the active bindings.
 
 These are deliberate trade-offs, not oversights. Wiring is meant to happen once, at startup, on one
-thread, and a container built for that needs no locks around registration or resolution, no
-scopes and no second instance. Idunn declines to pretend otherwise.
+thread, and a container built for that needs no locks around resolution, no scopes and no second
+instance. Idunn declines to pretend otherwise. Registration takes a lock all the same: the catalog
+is copy-on-write, so the lock costs readers nothing and nobody ever sees half a registration.
 
 ---
 
