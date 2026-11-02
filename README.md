@@ -65,7 +65,7 @@ at import or need optional dependencies you have not installed.
 | Call | Use it when | Behavior |
 |---|---|---|
 | `Idunn().autodiscover('my_app')` | You own the process: an application with a `main()`, an app factory, or a startup hook. | Discovers every time it is called. Call it once at startup, before the first `@Invert()` object is built. |
-| `Idunn().bootstrap('my_lib')` | You ship a library and have no startup hook to call `autodiscover` from. | `autodiscover`, guarded to run once per root. Call it from every public entry point: the first call discovers, later calls return the cached report. Thread-safe. |
+| `Idunn().bootstrap('my_lib')` | You ship a library and have no startup hook to call `autodiscover` from. | `autodiscover`, guarded to run once per root. Call it from every public entry point: the first call discovers, later calls return the cached report. Thread-safe, even when called while a module is being imported. |
 
 ### Applications
 
@@ -182,10 +182,11 @@ class MyLib:
     self._engine.store(key, value)
 ```
 
-Both calls return a `ReportMap` listing the modules imported and the classes *this call* registered
-(a repeat run lists none), which makes a tidy startup log line. Discovery accumulates, so an
-application can `autodiscover` its own package while every library it uses quietly bootstraps
-itself.
+Both calls return a `ReportMap` listing the modules imported and the classes registered, which
+makes a tidy startup log line. `autodiscover` lists only what *that call* registered (a repeat run
+lists none); `bootstrap` returns the root's cached report, which covers everything its first
+discovery registered. Discovery accumulates, so an application can `autodiscover` its own package
+while every library it uses quietly bootstraps itself.
 
 ---
 

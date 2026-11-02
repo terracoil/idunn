@@ -258,19 +258,30 @@ Idunn().autodiscover(
   unlucky import. Install such packages unpacked.
 - **`ReportMap`.** Both calls return a `TypedDict` of strings: `root_package`, `imported_modules`
   (sorted, root included), `skipped_modules`, `registered_ports`, and `registered_adapters`. The
-  last two list only the classes *this call* registered, so a repeat run reports none. Class names
-  are fully qualified. Import it as `from idunn import ReportMap` when you annotate a stored report.
+  last two list only the classes *this call* registered, so a repeat run reports none; the report
+  `bootstrap` caches covers every run of the root's first bootstrap (below). Class names are fully
+  qualified. Import it as `from idunn import ReportMap` when you annotate a stored report.
 - **Multiple roots accumulate.** Registration is idempotent and the catalog is shared, so call
   discovery once per package that contributes adapters. Each root registers only the classes defined
   under it.
 - **`bootstrap` caches per root.** The first call for a root discovers with the options given. Later
   calls for that root return the same report without rescanning and ignore their options. Distinct
-  roots are tracked independently, the guard is locked, failures are not cached, and `reset()`
-  forgets the cache along with the registrations.
-- **Re-entrant `bootstrap`.** A module under the root may call `bootstrap` for that root while it is
-  being imported. The nested call finishes first and its report is the one cached, so a class the
-  module defines *after* that call is registered but missing from the report. Put the call at the
-  end of the module, or trust `describe()`, which is authoritative.
+  roots are tracked independently, failures are not cached, and `reset()` forgets the cache along
+  with the registrations. No lock is held while modules import. Concurrent first calls wait for one
+  discovery and share its report. A call made while a module is being imported runs its own
+  discovery instead of waiting, so it cannot deadlock against another thread's discovery. If two
+  threads' discoveries each need a module the other is halfway through importing, Python breaks
+  the tie itself: one of those imports fails, discovery treats it like any other import error, and
+  a retry is safe. Whatever the failed attempt's other runs registered stays registered, and the
+  retry's cached report lists it too.
+- **Re-entrant and import-time `bootstrap`.** A module may call `bootstrap` while it is being
+  imported, in this thread or another, and that includes a module under the root calling it for
+  its own root. Every such run is merged into the one cached report, so nothing it registers goes
+  missing, wherever in the module the call sits. The call itself returns its own run's report,
+  which lists only what that run could see: a module that calls at its top has defined nothing yet.
+  The first call normally returns the cached report itself. Only when an import-time run outlives
+  it (one started by a module outside the root, say) does it get the merge so far, and the cache
+  gets the rest when that run finishes.
 
 ---
 
@@ -363,11 +374,12 @@ message names the culprit as `module.QualName`, so two `Feast`s in two modules a
 The limitations are prices paid for a single process-wide container:
 
 - **One container per process.** There is no second, independent `Idunn()`.
-- **Not fully thread-safe.** Creating the singleton, the `bootstrap` guard and registration are
-  locked, and the catalog is copy-on-write: a registration swaps in a whole new snapshot, so a
-  reader never sees half of one. The singleton cache is still plain, unlocked state, because wiring
-  is meant to happen once, on one thread, at startup. Do that, then resolve; two threads racing to
-  build the same `SINGLETON` for the first time may each walk away with their own.
+- **Not fully thread-safe.** Creating the singleton and registration are locked, the catalog is
+  copy-on-write (a registration swaps in a whole new snapshot, so a reader never sees half of one),
+  and `bootstrap` is safe from any thread, during an import included. The singleton cache is still
+  plain, unlocked state, because wiring is meant to happen once, on one thread, at startup. Do
+  that, then resolve; two threads racing to build the same `SINGLETON` for the first time may each
+  walk away with their own.
 - **Test isolation is your job.** See [above](#test-isolation).
 
 The non-features are deliberate, so there is no point hunting for them:

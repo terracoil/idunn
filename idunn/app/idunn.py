@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from threading import RLock
+from collections.abc import Callable, Iterable
+from functools import partial
 from typing import Any
 
 from idunn.domain import AdapterMetadata, LifecycleEnum, PortBinding, ReportMap
-from idunn.internal import AutoDiscovery, InversionMapper, InversionResolver
+from idunn.internal import AutoDiscovery, BootstrapGate, InversionMapper, InversionResolver
 from idunn.util import Environment, MetaSingleton, QualifiedName
 
 
@@ -29,8 +29,7 @@ class Idunn(metaclass=MetaSingleton):
     self._environment: str = Environment.current().name
     self._mapper: InversionMapper = InversionMapper()
     self._resolver: InversionResolver = InversionResolver(self._mapper)
-    self._bootstrap_lock: RLock = RLock()
-    self._bootstrapped: dict[str, ReportMap] = {}
+    self._gate: BootstrapGate = BootstrapGate()
 
   def autodiscover(
     self,
@@ -65,18 +64,16 @@ class Idunn(metaclass=MetaSingleton):
     wired on first use instead of at import. The first call for a root discovers with the options
     given; later calls return the cached :class:`~idunn.ReportMap` without rescanning and ignore
     their options. Distinct roots are cached independently, and a failed run is not cached at
-    all. Thread-safe and re-entrant: a module imported mid-discovery may call ``bootstrap``
-    itself without deadlocking anyone.
+    all. Thread-safe: concurrent first calls run one discovery and share its report, and a module
+    may call ``bootstrap`` while it is being imported, in this thread or another, without
+    deadlocking. Such a call cannot wait for anyone, so it discovers itself and returns its own
+    run's report; the cached report merges every run of the root's first bootstrap, so nothing
+    those runs registered goes missing from it.
     """
-    if root_package not in self._bootstrapped:
-      with self._bootstrap_lock:
-        if root_package not in self._bootstrapped:
-          report = self.autodiscover(root_package, exclude=exclude, strict=strict)
-          # A re-entered bootstrap (a module calling it mid-import) caches first and setdefault
-          # keeps that report. It lists only what was registered before the re-entry, so a class
-          # defined after the nested call is missing from the cached report; describe() has it.
-          self._bootstrapped.setdefault(root_package, report)
-    return self._bootstrapped[root_package]
+    discover: Callable[[], ReportMap] = partial(
+      self.autodiscover, root_package, exclude=exclude, strict=strict
+    )
+    return self._gate.run(root_package, discover=discover)
 
   def describe(self) -> str:
     """Return a readable snapshot of the port-to-adapter bindings in the current environment.
@@ -99,7 +96,7 @@ class Idunn(metaclass=MetaSingleton):
     self._environment = Environment.current(environment).name
     self._mapper.clear()
     self._resolver.clear()
-    self._bootstrapped.clear()
+    self._gate.clear()
     return self
 
   def _describe_adapter(self, *, metadata: AdapterMetadata) -> str:

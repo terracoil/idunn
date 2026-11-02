@@ -10,8 +10,10 @@ class ReportMap(TypedDict):
   ``imported_modules`` and ``skipped_modules`` hold dotted module names; ``skipped_modules`` stays
   empty unless ``strict=False`` let discovery step over modules that failed to import.
   ``registered_ports`` and ``registered_adapters`` list only the classes *this call* registered,
-  so a repeat run reports none. They hold ``module.QualName`` strings rather than class objects,
-  which keeps the report a plain dict you can log or serialize without a second thought.
+  so a repeat run reports none; for ``bootstrap``, the cached report merges every run of the root's
+  first bootstrap, the successful runs of any failed attempt before it included, so it lists
+  everything that bootstrap registered. They hold ``module.QualName`` strings rather than class
+  objects, which keeps the report a plain dict you can log or serialize without a second thought.
   """
 
   root_package: str

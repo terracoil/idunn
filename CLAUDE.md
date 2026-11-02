@@ -37,13 +37,14 @@ Idunn is a constructor-time IoC toolkit: **Port → Adapter → `@Invert` consum
 | Layer | Holds | May import |
 |-------|-------|------------|
 | `idunn/app/` | `Port` (`port.py`), `Adapter` (`adapter.py`), `Invert` (`invert.py`), `Idunn` facade (`idunn.py`) | anything |
-| `idunn/internal/` | `InversionMapper`, `InversionResolver`, `InversionValidator`, `AutoDiscovery`, `DecoratorSupport`, `PortRegistry` | domain, util |
+| `idunn/internal/` | `InversionMapper`, `InversionResolver`, `InversionValidator`, `AutoDiscovery`, `BootstrapGate`, `BootstrapFlight`, `ReportMerger`, `DecoratorSupport`, `PortRegistry` | domain, util |
 | `idunn/domain/` | frozen dataclasses (`AdapterDeclaration`, `AdapterMetadata`, `Catalog`, `PortBinding`), `LifecycleEnum`, `ReportMap` TypedDict, the `IdunnError` hierarchy | util |
-| `idunn/util/` | `Environment`, `MetaSingleton`, `QualifiedName` | nothing internal |
+| `idunn/util/` | `Environment`, `ImportContext`, `MetaSingleton`, `QualifiedName` | nothing internal |
 
 No modules may live at `idunn/` root besides `__init__.py`. Cross-package imports go through each
 layer's `__init__.py` re-exports (e.g. `from idunn.domain import ...`), never module paths.
-`InversionValidator` is intentionally *not* re-exported from `idunn.internal`.
+`InversionValidator`, `BootstrapFlight` and `ReportMerger` are intentionally *not* re-exported from
+`idunn.internal`: only their siblings use them.
 
 ### Public surface
 
@@ -74,12 +75,26 @@ pins this set, so changing it means changing that test. The engine classes are n
   the public `typing.is_protocol` is 3.13+ and the floor is 3.11.
 - **There is no public `resolve()` or `register()`.** `@Invert` reaches the engine through the private
   `Idunn()._inject` / `Idunn()._has`. This removal is deliberate (`docs/ADVANCED.md`); do not add one.
-- **`Idunn().bootstrap(root)` is `autodiscover` guarded to run once per root** (double-checked
-  lock, cache keyed by root only, so repeat calls ignore their options; failures are not cached).
-  Libraries call it from their entry points instead of at import. `reset()` clears the cache, so the
-  conftest fixture isolates it. A re-entered call (a module under the root calling `bootstrap`
-  mid-import) caches its own report first, so classes that module defines after the call are
-  registered but missing from the cached report.
+- **`Idunn().bootstrap(root)` is `autodiscover` run once per root through `BootstrapGate`** (cache
+  keyed by root only, so repeat calls ignore their options; failures are not cached). Libraries
+  call it from their entry points instead of at import. Two rules keep it deadlock-free: no Idunn
+  lock is held while importing (the gate's plain `Lock` guards bookkeeping only), and a thread that
+  may hold an import lock never waits for another thread's discovery. A first call opens a
+  `BootstrapFlight`. A call that finds one open waits on its `Event` and shares the cached report,
+  unless its thread already has a run in the flight (re-entry: the flight's `runners` holds one
+  thread ident per run in progress, so a finished owner, or a new thread that inherited its ident,
+  waits like anyone else) or `ImportContext.active()` (an `importlib._bootstrap` frame on its
+  stack); then it joins the flight, runs its own discovery and returns its own run's report. The
+  last run out caches `ReportMerger.merge` of every successful run, which is exact because each
+  class is new for exactly one atomic batch, so the cached report lists every class wherever a
+  module put its `bootstrap` call. The owner returns that cached report, or the merge so far when a
+  participant outlives it, which takes an import the owner never waits on (a module outside the
+  root, or one its discovery excludes or skips). An owner failure caches nothing and wakes the
+  waiters, who retry; the failed flight's successful runs carry over into the retry's flight,
+  because their classes stay registered and no retry would list them as new. `reset()` clears the
+  cache (so the conftest fixture isolates it) by swapping in a new generation, reports, flights and
+  carried runs as one tuple; every run captures it once at entry, so a stale run lands in the
+  discarded one.
 - **Keys apply only at `@Invert` consumers.** `@Invert(keys={'param': 'name'})` selects a keyed
   adapter for that parameter. When the resolver recursively builds an adapter's own constructor
   dependencies it always resolves unkeyed (`key=None`), so keyed adapters never satisfy

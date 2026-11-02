@@ -2,15 +2,23 @@
 The public ``Idunn`` facade has no register or resolve, on purpose, which is inconvenient only for
 the people testing it. Engine-level tests drive :class:`Wiring` (a standalone mapper and
 resolver), ``@Invert()`` integration tests use :class:`Container` to install adapters into the
-process singleton, and discovery tests write throwaway packages with :class:`PackageWriter`.
+process singleton, discovery tests write throwaway packages with :class:`PackageWriter`, and
+:class:`ImportingCall` runs a callable as a module body, for tests that need to be mid-import.
 """
 
 from __future__ import annotations
 
 import importlib
+import importlib.abc
+import importlib.util
+import sys
 import zipfile
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
+from importlib.machinery import ModuleSpec
 from pathlib import Path
 from textwrap import dedent
+from types import ModuleType
 from typing import Any
 
 import pytest
@@ -53,6 +61,51 @@ class Container:
   def install(*adapters: type[Any]) -> None:
     """Register the adapters into the singleton's catalog as one batch: all of them, or none."""
     Idunn()._mapper.register_batch(adapters=adapters)
+
+
+class ImportingCall(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+  """Runs ``body`` as the body of a made-up module, so it runs inside a real ``import``.
+  It is its own finder and loader, so ``body`` runs from ``exec_module`` with no module-body
+  frame at all, just like a C extension's init, which is the hardest case for import detection.
+  """
+
+  def __init__(self, name: str, body: Callable[[], object]) -> None:
+    """Answer imports of ``name`` (and nothing else) by calling ``body``."""
+    self.name: str = name
+    self.result: object = None
+    self._body: Callable[[], object] = body
+
+  def create_module(self, spec: ModuleSpec) -> ModuleType | None:
+    """Let ``importlib`` build an ordinary empty module."""
+    return None
+
+  def exec_module(self, module: ModuleType) -> None:
+    """Run the body and keep what it returned."""
+    self.result = self._body()
+
+  def find_spec(
+    self,
+    fullname: str,
+    path: Sequence[str] | None,
+    target: ModuleType | None = None,
+  ) -> ModuleSpec | None:
+    """Claim only this call's module name."""
+    return importlib.util.spec_from_loader(fullname, self) if fullname == self.name else None
+
+  @contextmanager
+  def installed(self) -> Iterator[ImportingCall]:
+    """Put this finder first on ``sys.meta_path`` for the block, then remove it and its module."""
+    sys.meta_path.insert(0, self)
+    try:
+      yield self
+    finally:
+      sys.meta_path.remove(self)
+      sys.modules.pop(self.name, None)
+
+  def run(self) -> object:
+    """Import the module, which runs ``body`` mid-import, and return what it returned."""
+    importlib.import_module(self.name)
+    return self.result
 
 
 class PackageWriter:
