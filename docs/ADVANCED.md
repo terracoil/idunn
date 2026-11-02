@@ -382,9 +382,7 @@ classes, there are no loose module-level functions, and every method has a singl
 guard clauses aside. The four layers (`app`, `domain`, `internal`, `util`) and their allowed import
 directions are enforced by `tests/test_architecture.py`.
 
-Before a release, check `authors`, the project URLs and the classifiers in `pyproject.toml`. The
-`Documentation` URL deserves a hard look: it points at `docs/README.md` on a `main` branch, and the
-repository has neither. Then:
+Before a release, check `authors`, the project URLs and the classifiers in `pyproject.toml`. Then:
 
 ```bash
 poetry build

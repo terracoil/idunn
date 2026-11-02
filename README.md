@@ -319,8 +319,10 @@ poetry run ruff format --check . && poetry run ruff check .
 poetry run mypy
 ```
 
-CI (`.github/workflows/ci.yml`) runs the same checks on Python 3.11, 3.12, and 3.13.16. Idunn
-supports Python 3.11 and newer (`requires-python = ">=3.11,<4.0"`) and is developed on 3.13.16.
+CI (`.github/workflows/ci.yml`) runs the lock, format, lint and type checks once and the tests on
+Python 3.11, 3.12, 3.13.16 and 3.14. `poetry.lock` is committed, so run `poetry lock` after touching
+dependencies, or CI will notice. Idunn supports Python 3.11 and newer
+(`requires-python = ">=3.11,<4.0"`) and is developed on 3.13.16.
 
 ---
 

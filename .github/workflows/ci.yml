@@ -7,13 +7,47 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Format, lint and types are version-independent: Ruff and mypy already target the 3.11 floor, so
+  # one run on the development interpreter says everything four runs would.
   quality:
-    name: Python ${{ matrix.python-version }}
+    name: Quality
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13.16"
+
+      - name: Install Poetry
+        run: python -m pip install --upgrade pip poetry
+
+      - name: Check pyproject and lock file
+        run: poetry check --lock
+
+      - name: Install dependencies
+        run: poetry install --with dev
+
+      - name: Check formatting
+        run: poetry run ruff format --check .
+
+      - name: Lint
+        run: poetry run ruff check .
+
+      - name: Type-check
+        run: poetry run mypy
+
+  # Behavior is what actually differs between interpreters, so only the tests fan out.
+  test:
+    name: Tests on Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13.16"]
+        python-version: ["3.11", "3.12", "3.13.16", "3.14"]
 
     steps:
       - name: Check out repository
@@ -29,15 +63,6 @@ jobs:
 
       - name: Install dependencies
         run: poetry install --with dev
-
-      - name: Check formatting
-        run: poetry run ruff format --check .
-
-      - name: Lint
-        run: poetry run ruff check .
-
-      - name: Type-check
-        run: poetry run mypy
 
       - name: Test
         run: poetry run pytest

@@ -26,7 +26,6 @@ build/
 
 # Poetry
 .venv/
-poetry.lock
 
 # Temporary files and caches (structure tracked via tmp/.gitkeep)
 tmp/*
@@ -64,5 +63,4 @@ logs
 #docs/architecture/
 *.bkp
 *.dtmp
-CLAUDE.md
 .claude/
