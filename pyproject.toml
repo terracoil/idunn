@@ -2,7 +2,7 @@
 name = "idunn"
 authors = [{ name = "Steven Miers", email = "steven.miers@gmail.com" }]
 readme = "README.md"
-version = "1.0.1"
+version = "1.4"
 description = "A tiny constructor-time dependency inversion toolkit for Python."
 license = "MIT"
 requires-python = ">=3.11,<4.0"

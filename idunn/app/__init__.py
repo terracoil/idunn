@@ -1,4 +1,4 @@
-"""Application layer: the @Port/@Adapter/@Invert decorators and the Idunn singleton."""
+"""Application layer: the three decorators and the ``Idunn`` facade, the parts users meet."""
 
 from .adapter import Adapter
 from .idunn import Idunn

@@ -9,17 +9,20 @@ _T = TypeVar('_T')
 
 
 class MetaSingleton(type):
-  """Metaclass whose instances are cached one-per-class for the process."""
+  """Metaclass that caches one instance per class for the life of the process.
+  A metaclass rather than a module-level instance, so nothing happens (environment lookup
+  included) until somebody first calls ``Idunn()``.
+  """
 
   _instances: dict[type, object] = {}
   _lock: Lock = Lock()
 
   def __call__(cls: type[_T], *args: object, **kwargs: object) -> _T:
     """Return the cached instance, creating it once under a lock.
-
-    ``cls: type[_T]`` is what makes ``Idunn()`` resolve to ``Idunn`` (not
-    ``object``) for callers and the type checker. Double-checked locking keeps
-    first-construction race-free without paying for the lock on every call.
+    Arguments count only on that first call; afterwards they are ignored, not merged.
+    ``cls: type[_T]`` is what makes ``Idunn()`` read as ``Idunn`` (not ``object``) to callers
+    and the type checker. Double-checked locking keeps first construction race-free without
+    paying for the lock on every call after it.
     """
     if cls not in MetaSingleton._instances:
       with MetaSingleton._lock:

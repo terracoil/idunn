@@ -1,9 +1,8 @@
 """Test seams for driving the internal inversion engine.
-
-Resolution and manual registration are no longer on the public ``Idunn`` facade, so
-engine-level tests drive :class:`Wiring` (a standalone mapper+resolver), and ``@Invert``
-integration tests use :class:`Container` to install adapters into the process singleton.
-Discovery tests write throwaway packages with :class:`PackageWriter`.
+The public ``Idunn`` facade has no register or resolve, on purpose, which is inconvenient only for
+the people testing it. Engine-level tests drive :class:`Wiring` (a standalone mapper and
+resolver), ``@Invert()`` integration tests use :class:`Container` to install adapters into the
+process singleton, and discovery tests write throwaway packages with :class:`PackageWriter`.
 """
 
 from __future__ import annotations
@@ -20,7 +19,7 @@ from idunn.util import Environment
 
 
 class Wiring:
-  """A standalone engine (own mapper + resolver) mirroring the facade's register/resolve."""
+  """A standalone engine (own mapper and resolver) with the register/resolve the facade hides."""
 
   def __init__(self, environment: str | None = None) -> None:
     """Resolve the environment like the facade does (arg → IDUNN_ENV → local)."""
@@ -72,9 +71,8 @@ class PackageWriter:
 
   def package(self, name: str, files: dict[str, str]) -> Path:
     """Write package ``name`` from ``files`` (relative path to source); return its directory.
-
-    Every directory gets an empty ``__init__.py`` unless ``files`` supplies one, except
-    directories whose name ends in ``_ns``, which stay namespace packages.
+    Every directory gets an empty ``__init__.py`` unless ``files`` supplies one or its name ends
+    in ``_ns``, which keeps it a namespace package.
     """
     package_dir: Path = self._tmp_path / name
     package_dir.mkdir()

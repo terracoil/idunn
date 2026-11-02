@@ -1,4 +1,4 @@
-"""Idunn.describe() renders the structured binding snapshot from the mapper."""
+"""``Idunn().describe()``: the mapper's binding snapshot, rendered for humans."""
 
 from typing import Protocol
 

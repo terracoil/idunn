@@ -1,3 +1,5 @@
+"""Engine-level resolution through ``Wiring``: selection, lifecycles, optional ports, cycles."""
+
 from typing import Protocol
 
 import pytest
@@ -249,7 +251,7 @@ def test_duplicate_unkeyed_adapters_in_overlapping_envs_raises() -> None:
   class PaymentPort(Protocol):
     pass
 
-  # Two unkeyed adapters (both key=None) active in 'prod' collide via key-overlap.
+  # Two unkeyed adapters both active in 'prod': same (port, key=None), overlapping envs.
   @Adapter(PaymentPort, envs={'prod'})
   class StripePaymentAdapter(PaymentPort):
     pass

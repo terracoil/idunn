@@ -1,4 +1,4 @@
-"""Architecture tests: enforce the app/domain/internal/util layering."""
+"""Architecture tests: the four layers import downhill only, and nothing loiters at the root."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ class LayerProbe:
 
   @staticmethod
   def layer_of_path(path: Path) -> str | None:
-    """Layer that owns a source file, or None for a root-level module."""
+    """Layer that owns a source file, or None for a root-level or non-layer module."""
     parts = path.relative_to(PACKAGE_ROOT).parts
     return parts[0] if len(parts) >= 2 and parts[0] in LAYERS else None
 

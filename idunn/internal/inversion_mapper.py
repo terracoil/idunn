@@ -1,4 +1,4 @@
-"""The port-to-adapter catalog: registration, environment-filtered selection, and caching."""
+"""The port-to-adapter catalog: registration, environment-filtered selection, caching."""
 
 from __future__ import annotations
 
@@ -20,11 +20,9 @@ from .port_registry import PortRegistry
 
 
 class InversionMapper:
-  """Owns the port/adapter registry and answers "which adapter for this port?".
-
-  Selection is environment-filtered and memoized in a per-``(environment, key)`` cache
-  that is invalidated whenever the registry mutates, so a hot resolve is a dict lookup
-  rather than a filter-and-sort.
+  """Owns the port and adapter catalog and answers "which adapter for this port?".
+  Selection is memoized per ``(environment, port, key)`` and the cache is dropped whenever an
+  adapter registers, so a hot resolve is a dict lookup rather than a filter and sort.
   """
 
   def __init__(self) -> None:
@@ -37,7 +35,7 @@ class InversionMapper:
     self._dirty: bool = False
 
   def bindings(self, *, environment: str) -> tuple[PortBinding, ...]:
-    """Structured snapshot of every port and its adapters for the given environment."""
+    """Return a snapshot of every port and its adapters in ``environment``, sorted by name."""
     snapshot: list[PortBinding] = []
     for port in sorted(self._ports, key=QualifiedName.of):
       adapters = tuple(metadata for metadata in self._adapters if metadata.port is port)
@@ -61,10 +59,8 @@ class InversionMapper:
     key: str | None,
     environment: str,
   ) -> AdapterMetadata | None:
-    """Return the active adapter for a port+key in an environment, or ``None``.
-
-    Hot path: after the first lookup per ``(environment, key)`` this is a dict hit;
-    the cache is dropped wholesale whenever the registry mutates (see ``_refresh_cache``).
+    """Return the active adapter for ``port`` and ``key`` in ``environment``, or ``None``.
+    Hot path: after the first lookup per ``(environment, port, key)`` this is a dict hit.
     """
     self._refresh_cache()
     cache_key = (environment, RegistrationKey(port=port, key=key))
@@ -75,14 +71,14 @@ class InversionMapper:
 
   @property
   def ports(self) -> frozenset[type[Any]]:
-    """Registered ports."""
+    """Registered ports. Only the tests read this, to inspect the catalog without the facade."""
     return frozenset(self._ports)
 
   def register_adapter(self, adapter: type[Any]) -> bool:
-    """Register a ``@Adapter``-marked class; returns whether it was newly added."""
+    """Register an ``@Adapter`` class; return whether it was new, so discovery can report it."""
     declaration = self._declaration_for(adapter=adapter)
     if adapter in self._registered_adapter_classes:
-      return False  # already registered — idempotent no-op
+      return False  # already registered; repeats are politely ignored
     InversionValidator.validate_adapter_class(adapter=adapter, port=declaration.port)
     metadata = AdapterMetadata(
       adapter=adapter,
@@ -101,7 +97,10 @@ class InversionMapper:
     return True
 
   def register_port(self, port: type[Any]) -> bool:
-    """Register a ``@Port`` Protocol; returns whether it was newly added."""
+    """Register a ``@Port`` Protocol; return whether it was new.
+    Ports register on their own, not only through adapters, so ``describe()`` and the report
+    still show a port that nobody has implemented yet.
+    """
     if not PortRegistry.is_port(port):
       message = f'Port is not marked with @Port: {port.__qualname__}'
       raise InvalidPortError(message)
@@ -123,6 +122,7 @@ class InversionMapper:
     key: str | None,
     environment: str,
   ) -> list[AdapterMetadata]:
+    # Validation leaves at most one candidate per slot; sorting by order is belt and braces.
     return sorted(
       (
         metadata
@@ -148,6 +148,7 @@ class InversionMapper:
     raise AdapterNotFoundError(message)
 
   def _refresh_cache(self) -> None:
+    # Lazy invalidation: registering a batch costs one cache clear, not one per adapter.
     if self._dirty:
       self._selection_cache.clear()
       self._dirty = False

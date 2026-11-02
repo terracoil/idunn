@@ -20,13 +20,12 @@ from .port_registry import PortRegistry
 
 
 class InversionResolver:
-  """Builds object graphs by resolving each adapter's ``@Port``-typed constructor args.
-
-  Selection is delegated to the :class:`InversionMapper`; this class owns the recursion,
-  the in-progress cycle stack, and the cache of ``SINGLETON`` instances.
+  """Builds object graphs by resolving each adapter's ``@Port``-typed constructor parameters.
+  Choosing the adapter is the mapper's job; this class owns the recursion, the in-progress cycle
+  stack and the cache of ``SINGLETON`` instances.
   """
 
-  # Cache-miss sentinel: a resolved instance may legitimately be falsy, so we can't probe with None.
+  # Cache-miss sentinel: a cached singleton may be falsy, so None cannot double as 'not cached'.
   _MISSING: ClassVar[object] = object()
 
   def __init__(self, mapper: InversionMapper) -> None:
@@ -39,7 +38,7 @@ class InversionResolver:
     self._instances.clear()
 
   def resolve(self, *, port: type[Any], key: str | None, environment: str) -> Any:
-    """Resolve a port into an adapter instance for the active environment."""
+    """Resolve ``port`` into an adapter instance for ``environment``."""
     return self._resolve(port=port, key=key, environment=environment, stack=())
 
   def _build(
@@ -106,9 +105,11 @@ class InversionResolver:
     absent = (optional or has_default) and self._mapper.find(
       port=port, key=None, environment=environment
     ) is None
+    # Absent with a default: pass nothing and let Python supply the default.
     if absent and not has_default:
-      kwargs[parameter.name] = None  # optional, no default → fall back to None
+      kwargs[parameter.name] = None  # optional, no default: None it is
     elif not absent:
+      # Keys are the consumer's choice, so adapter-to-adapter dependencies resolve unkeyed.
       kwargs[parameter.name] = self._resolve(
         port=port, key=None, environment=environment, stack=stack
       )
@@ -139,6 +140,7 @@ class InversionResolver:
         stack=stack,
       )
     elif parameter.default is inspect.Signature.empty:
+      # Not a port and no default: Idunn injects ports, never values, so there is nothing to pass.
       message = (
         f'Cannot constructor-inject {adapter.__qualname__}.{parameter.name}: '
         f'{annotation!r} is not an @Port and no default value was supplied.'

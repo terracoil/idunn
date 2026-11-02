@@ -1,5 +1,4 @@
 """Registration guards: rejecting unmarked ports and malformed adapter declarations.
-
 The realistic end-user path into these guards is the decorator (``@Port`` / ``@Adapter``
 validate eagerly at decoration time). The validator's ``validate_adapter_class`` checks are
 the mapper's defensive backstop for declarations that bypass the decorator, so the

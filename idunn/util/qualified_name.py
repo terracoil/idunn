@@ -6,7 +6,9 @@ from typing import Any
 
 
 class QualifiedName:
-  """Stateless helper producing ``module.QualName`` for a class."""
+  """Stateless helper that turns a class into ``module.QualName``.
+  Strings rather than class objects keep ``ReportMap`` a plain dict and ``describe()`` readable.
+  """
 
   @staticmethod
   def of(obj: type[Any]) -> str:

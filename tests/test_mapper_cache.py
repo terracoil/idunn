@@ -1,9 +1,7 @@
 """InversionMapper selection cache: per-environment scoping and invalidation on mutation.
-
-Note: ``_active_candidates`` sorts its matches by ``order``, but ``validate_registration``
-forbids two adapters sharing ``(port, key)`` in overlapping environments, so any
-``(port, key, environment)`` slot yields 0 or 1 candidate — the multi-candidate ``sorted``
-is defensive and structurally unreachable, hence not exercised here.
+``_active_candidates`` sorts by ``order``, but ``validate_registration`` forbids two adapters
+sharing ``(port, key)`` in overlapping environments, so every ``(port, key, environment)`` slot
+holds 0 or 1 candidate; the sort is unreachable insurance and goes untested here.
 """
 
 from typing import Protocol
@@ -92,7 +90,7 @@ def test_keyed_and_unkeyed_share_no_cache_slot() -> None:
 
   assert unkeyed is not None and unkeyed.adapter is AnyGreeter
   assert keyed is not None and keyed.adapter is GoldGreeter
-  # caching one key must not poison the other
+  # Caching one key must not poison the other.
   assert mapper.find(port=GreeterPort, key=None, environment='local') is unkeyed
 
 

@@ -1,5 +1,4 @@
 """End-to-end: a user's package wired only through the public ``idunn`` surface.
-
 ``orchard_shop`` is written to disk once per module and discovered the way an application
 would do it. Nothing here touches ``Idunn()`` internals or the engine seams: wiring happens
 through ``autodiscover`` / ``bootstrap``, and every object graph starts at an ``@Invert()``

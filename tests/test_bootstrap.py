@@ -42,9 +42,8 @@ class SamplePackage:
     cls, *, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, package: str, reenter: bool = False
   ) -> Path:
     """Write the package, put ``tmp_path`` on ``sys.path`` and return the package directory.
-
-    With ``reenter`` the adapter module ends by bootstrapping its own root, as a library
-    entry point running at import time would.
+    With ``reenter`` the adapter module ends by bootstrapping its own root, as a library entry
+    point running at import time would.
     """
     package_dir = tmp_path / package
     (package_dir / 'adapters').mkdir(parents=True)
@@ -86,7 +85,7 @@ def test_bootstrap_returns_cached_report_without_rescanning(
   package_dir = SamplePackage.install(tmp_path=tmp_path, monkeypatch=monkeypatch, package=package)
   first = Idunn().bootstrap(package)
 
-  # A real rescan would now find no modules on disk and produce an empty report.
+  # A rescan could not list the deleted adapters, so the identical object proves none happened.
   shutil.rmtree(package_dir / 'adapters')
   second = Idunn().bootstrap(package)
 
@@ -175,7 +174,8 @@ def test_bootstrap_reentered_during_discovery_does_not_deadlock(
   thread.join(timeout=10)
 
   assert not thread.is_alive()
-  # The nested call registers the adapter first and its report is the one kept.
+  # The nested call runs after the adapter class is defined, so it registers it first and its
+  # report is the one kept. Bootstrapping at the top of the module would leave it unlisted.
   assert Idunn().bootstrap(package) is reports[0]
   assert len(reports[0]['registered_adapters']) == 1
   assert SamplePackage.take_apple(package) == f'golden apple from {package}'

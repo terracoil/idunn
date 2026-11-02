@@ -1,5 +1,4 @@
 """Environment resolution and validation: the legitimate-but-wrong env-name surface.
-
 ``Environment.normalize`` is where a user's bad ``reset(environment=...)`` / ``IDUNN_ENV``
 input is caught. The ``_VALID_PATTERN`` already excludes path separators, so the traversal
 guard is reachable only through a ``..`` substring (e.g. ``a..b``); the separator branches

@@ -11,15 +11,16 @@ from .port_registry import PortRegistry
 
 
 class InversionValidator:
-  """Stateless checks for adapter classes, registrations, and resolved instances.
-
-  Every method either returns ``None`` or raises an :class:`~idunn.domain.IdunnError`;
-  it holds no state, so the mapper and resolver can call it freely.
+  """Stateless checks for adapter classes, registrations and resolved instances.
+  Every public method returns ``None`` or raises an :class:`~idunn.domain.IdunnError`, so the
+  mapper and resolver can call them without ceremony.
   """
 
   @staticmethod
   def validate_adapter_class(*, adapter: type[Any], port: type[Any]) -> None:
-    """Reject a non-class adapter or a port that is not marked with ``@Port``."""
+    """Reject a non-class adapter or a port that is not marked with ``@Port``.
+    ``@Adapter`` checks both already; this is the backstop for a declaration attached by hand.
+    """
     if not inspect.isclass(adapter):
       message = f'Adapter must be a class: {adapter!r}'
       raise InvalidAdapterError(message)

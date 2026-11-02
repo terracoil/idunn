@@ -1,4 +1,4 @@
-"""Tests for the @Invert constructor auto-injection decorator."""
+"""``@Invert()`` from the consumer's side: inference, keys, explicit maps, optional ports."""
 
 from typing import Protocol
 

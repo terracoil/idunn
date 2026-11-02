@@ -1,4 +1,4 @@
-"""Discovery of every decorated Idunn port and adapter under one root package."""
+"""Discovery of every decorated port and adapter under one root package."""
 
 from __future__ import annotations
 
@@ -18,9 +18,13 @@ from .port_registry import PortRegistry
 
 
 class AutoDiscovery:
-  """Imports every module under a root package, then registers its decorated classes."""
+  """Import every module under a root package, then register its decorated classes.
+  Every import finishes before anything registers, so a strict import failure leaves the catalog
+  exactly as it was.
+  """
 
-  # Matched against each dotted-path part *below* the root; user patterns add to these.
+  # Matched against each dotted part *below* the root, so a test package named as the root is
+  # still scanned on purpose. User patterns add to these; they never replace them.
   DEFAULT_EXCLUDE: frozenset[str] = frozenset({'tests', 'test', 'test_*', '*_test', 'conftest'})
 
   # Importing ``pkg.__main__`` runs the package's CLI, so it is never a discovery target.
@@ -34,7 +38,10 @@ class AutoDiscovery:
     exclude: Iterable[str] | str = (),
     strict: bool = True,
   ) -> ReportMap:
-    """Import all modules under the root first, then register ports, then adapters."""
+    """Import all modules under the root first, then register ports, then adapters.
+    ``root_package`` may also be an imported module, though the facade only ever passes a name.
+    """
+    # Outside the strict handling: a root that will not import raises its own error regardless.
     root_module = self._import_root(root_package=root_package)
     module_names = self._module_names(root_module=root_module, patterns=self._patterns(exclude))
     modules, skipped = self._import_modules(module_names=module_names, strict=strict)
@@ -74,7 +81,7 @@ class AutoDiscovery:
     for module_name in module_names:
       try:
         modules.append(self._load(module_name=module_name))
-      except Exception as exc:  # noqa: BLE001
+      except Exception as exc:  # any import failure counts; SystemExit still gets through
         if strict:
           message = f'Idunn failed to import module {module_name!r}: {exc}'
           raise DiscoveryError(message) from exc

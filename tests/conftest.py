@@ -1,4 +1,4 @@
-"""Shared fixtures: isolate the process-wide Idunn singleton per test."""
+"""Shared fixtures: one process-wide singleton, wiped clean around every test."""
 
 from collections.abc import Iterator
 

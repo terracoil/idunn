@@ -1,7 +1,6 @@
-"""The public surface lives in the top-level ``idunn`` package, and tests and examples use it there.
-
-Names a user is never meant to import stay in their layer package (``idunn.domain``,
-``idunn.internal``, ``idunn.util``) and are imported from there; nothing comes from a module path.
+"""The public surface lives in top-level ``idunn``, and tests and examples import it from there.
+Everything else comes from its layer package (``idunn.domain``, ``idunn.internal``,
+``idunn.util``), never from a module path, so files can move without a scavenger hunt.
 """
 
 import ast
@@ -29,14 +28,15 @@ EXPECTED_PUBLIC_NAMES = {
 
 
 class ImportProbe:
-  """Finds absolute ``from idunn.<...> import`` statements that bypass the public barrel."""
+  """Finds absolute ``from idunn.<...> import`` statements that bypass the public barrel.
+  Plain ``import idunn.x`` statements are not inspected.
+  """
 
   ROOTS: tuple[Path, ...] = (REPO_ROOT / 'tests', REPO_ROOT / 'examples')
 
   @staticmethod
   def offenders(path: Path, public: frozenset[str]) -> list[str]:
     """Return ``line module.name`` for each public name or module path imported below ``idunn``.
-
     Relative imports (``level > 0``) and bare ``from . import x`` (``module is None``) are
     skipped: they never name the ``idunn`` package. Hits are ordered by line number, because
     ``ast.walk`` is breadth-first.

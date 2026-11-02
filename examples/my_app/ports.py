@@ -1,4 +1,4 @@
-"""Ports for ``my_app``; ``ports`` is a naming convention, not a discovery requirement."""
+"""Ports for ``my_app``. The module name is a courtesy to readers, not a discovery requirement."""
 
 from typing import Protocol
 

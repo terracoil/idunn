@@ -1,4 +1,4 @@
-"""Domain layer: declarations, metadata, errors, lifecycle, and value types."""
+"""Domain layer: frozen declarations and snapshots, the lifecycle enum, the report, the errors."""
 
 from .adapter_declaration import AdapterDeclaration
 from .adapter_metadata import AdapterMetadata
