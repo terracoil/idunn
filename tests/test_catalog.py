@@ -5,10 +5,8 @@ answer, and the tests below check what replaced it: per-environment lookups, all
 batches, and readers that never see a half-built catalog.
 """
 
-import sys
 import threading
 import time
-from collections.abc import Iterator
 from functools import partial
 from typing import Any, Protocol
 
@@ -16,6 +14,8 @@ import pytest
 from idunn import Adapter, AdapterNotFoundError, InvalidAdapterError, InvalidPortError, Port
 from idunn.domain import Catalog, PortBinding
 from idunn.internal import InversionMapper
+
+from _support import Racer
 
 
 @Port
@@ -91,50 +91,6 @@ class Greeters:
       )
       for key in keys
     )
-
-
-class Racer:
-  """Runs callables on threads started together and collects whatever they raise."""
-
-  def __init__(self) -> None:
-    """Start with no errors recorded."""
-    self.errors: list[BaseException] = []
-
-  def run(self, *targets: Any) -> None:
-    """Start every target behind one barrier, then wait for all of them.
-    A thread still running after the timeout is recorded as an error, and threads are daemons, so
-    a deadlock fails the test instead of hanging pytest at exit.
-    """
-    barrier = threading.Barrier(len(targets))
-    threads = [
-      threading.Thread(target=self._guarded, args=(barrier, target), daemon=True)
-      for target in targets
-    ]
-    for thread in threads:
-      thread.start()
-    for thread in threads:
-      thread.join(timeout=30)
-    self.errors.extend(
-      TimeoutError(f'{thread.name} still running after 30 s')
-      for thread in threads
-      if thread.is_alive()
-    )
-
-  def _guarded(self, barrier: threading.Barrier, target: Any) -> None:
-    try:
-      barrier.wait()
-      target()
-    except BaseException as error:  # the assertion is that this list stays empty
-      self.errors.append(error)
-
-
-@pytest.fixture
-def eager_switching() -> Iterator[None]:
-  """Make the interpreter swap threads every microsecond, so races show up in a test this short."""
-  previous = sys.getswitchinterval()
-  sys.setswitchinterval(1e-6)
-  yield
-  sys.setswitchinterval(previous)
 
 
 def test_selection_is_scoped_per_environment() -> None:

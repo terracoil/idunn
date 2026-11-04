@@ -1,5 +1,6 @@
-"""Shared fixtures: one process-wide singleton, wiped clean around every test."""
+"""Shared fixtures: one process-wide singleton, wiped clean around every test, and a fast switch."""
 
+import sys
 from collections.abc import Iterator
 
 import pytest
@@ -12,3 +13,12 @@ def _reset_idunn() -> Iterator[None]:
   Idunn().reset(environment='local')
   yield
   Idunn().reset(environment='local')
+
+
+@pytest.fixture
+def eager_switching() -> Iterator[None]:
+  """Make the interpreter swap threads every microsecond, so races show up in a test this short."""
+  previous = sys.getswitchinterval()
+  sys.setswitchinterval(1e-6)
+  yield
+  sys.setswitchinterval(previous)

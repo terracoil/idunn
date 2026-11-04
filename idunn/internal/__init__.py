@@ -3,8 +3,8 @@ These power the :class:`~idunn.app.Idunn` facade: ``InversionMapper`` (keeper of
 ``InversionResolver`` (construction), ``ConstructorPlanner`` and ``LazyPlan`` (which parameters
 get injected), ``AutoDiscovery``, the ``BootstrapGate`` behind ``bootstrap()``,
 ``DecoratorSupport`` and the ``PortRegistry`` of ``@Port`` Protocols. Only classes used across the
-package boundary are re-exported; ``InversionValidator``, ``BootstrapFlight`` and ``ReportMerger``
-are reached by sibling imports and stay home.
+package boundary are re-exported; ``InversionValidator``, ``ConstructionStack``,
+``BootstrapFlight`` and ``ReportMerger`` are reached by sibling imports and stay home.
 None of this is public API, which is exactly what lets it change without a deprecation notice.
 """
 

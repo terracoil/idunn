@@ -290,13 +290,15 @@ possible, and not one apple simpler.
 
 `Idunn()` is a single process-wide container; call it a thousand times and you get back the same
 barrel of apples. That choice buys simplicity at a few honest prices: there is no second container,
-resolution is not thread-safe, and test isolation is your job via `Idunn().reset()`. When you want
-to see the wired graph, `Idunn().describe()` returns a readable snapshot of the active bindings.
+no scopes, and test isolation is your job via `Idunn().reset()`. When you want to see the wired
+graph, `Idunn().describe()` returns a readable snapshot of the active bindings.
 
-These are deliberate trade-offs, not oversights. Wiring is meant to happen once, at startup, on one
-thread, and a container built for that needs no locks around resolution, no scopes and no second
-instance. Idunn declines to pretend otherwise. Registration takes a lock all the same: the catalog
-is copy-on-write, so the lock costs readers nothing and nobody ever sees half a registration.
+These are deliberate trade-offs, not oversights. Wiring is meant to happen once, at startup, and a
+container built for that needs no scopes and no second instance. Idunn declines to pretend
+otherwise. It does not pretend about threads either: first use in a web worker is concurrent
+whatever the startup script intended. So registration is copy-on-write, each `SINGLETON` is built
+once under a lock of its own, and `bootstrap` is safe even halfway through an import. The warm
+path barely notices: readers never lock, and a built singleton is one dictionary lookup away.
 
 ---
 

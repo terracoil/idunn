@@ -3,8 +3,9 @@ The public ``Idunn`` facade has no register or resolve, on purpose, which is inc
 the people testing it. Engine-level tests drive :class:`Wiring` (a standalone mapper and
 resolver), ``@Invert()`` integration tests use :class:`Container` to install adapters into the
 process singleton, :class:`Resolve` builds a port by hand through the facade's private door,
-discovery tests write throwaway packages with :class:`PackageWriter`, and :class:`ImportingCall`
-runs a callable as a module body, for tests that need to be mid-import.
+discovery tests write throwaway packages with :class:`PackageWriter`, :class:`ImportingCall`
+runs a callable as a module body, for tests that need to be mid-import, and :class:`Racer` starts
+threads together and turns a deadlock into a failure instead of a hung suite.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import importlib
 import importlib.abc
 import importlib.util
 import sys
+import threading
 import zipfile
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
@@ -63,6 +65,42 @@ class Container:
   def install(*adapters: type[Any]) -> None:
     """Register the adapters into the singleton's catalog as one batch: all of them, or none."""
     Idunn()._mapper.register_batch(adapters=adapters)
+
+
+class Racer:
+  """Runs callables on threads started together and collects whatever they raise."""
+
+  def __init__(self, *, timeout: float = 30.0) -> None:
+    """Start with no errors recorded; a thread still running after ``timeout`` seconds is one."""
+    self.errors: list[BaseException] = []
+    self._timeout: float = timeout
+
+  def run(self, *targets: Callable[[], object]) -> None:
+    """Start every target behind one barrier, then wait for all of them.
+    A thread still running after the timeout is recorded as an error, and threads are daemons, so
+    a deadlock fails the test instead of hanging pytest at exit.
+    """
+    barrier = threading.Barrier(len(targets))
+    threads = [
+      threading.Thread(target=self._guarded, args=(barrier, target), daemon=True)
+      for target in targets
+    ]
+    for thread in threads:
+      thread.start()
+    for thread in threads:
+      thread.join(timeout=self._timeout)
+    self.errors.extend(
+      TimeoutError(f'{thread.name} still running after {self._timeout} s')
+      for thread in threads
+      if thread.is_alive()
+    )
+
+  def _guarded(self, barrier: threading.Barrier, target: Callable[[], object]) -> None:
+    try:
+      barrier.wait()
+      target()
+    except BaseException as error:  # the assertion is that this list stays empty
+      self.errors.append(error)
 
 
 class Resolve:

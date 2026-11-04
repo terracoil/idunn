@@ -68,14 +68,16 @@ At that moment Idunn:
 2. plans that adapter's constructor once (cached until `reset()`), honouring its own `@Invert` keys
    and map, and recursively resolves its `@Port` parameters;
 3. instantiates dependencies first, then the adapter, and checks the instance satisfies the port;
-4. caches `SINGLETON` instances and rebuilds `TRANSIENT` ones each time (`lifecycle=` also accepts
-   the lowercase strings `'singleton'` and `'transient'`);
+4. builds each `SINGLETON` once and caches it, and rebuilds `TRANSIENT` ones each time
+   (`lifecycle=` also accepts the lowercase strings `'singleton'` and `'transient'`);
 5. on a constructor, assigns every port parameter to `self.<name>`, then runs the body; a function
    just receives them as keyword arguments.
 
 Dependency order is worked out at resolution time, not registration time, so registration order
 never matters. Two adapters that depend on each other raise `InjectionCycleError`, which is kinder
-than the alternative.
+than the alternative. When a `SINGLETON` is about to be built for the first time, Idunn walks the
+graph it is about to make before building any of it, so a loop through a singleton's parameters
+raises before a single constructor in that graph has run.
 
 ---
 
@@ -403,7 +405,7 @@ class below:
 | `AdapterNotFoundError` | No active adapter exists for a requested port and the parameter is not optional. |
 | `DiscoveryError` | A module below the discovery root fails to import and `strict=True`, or the root package does not live in a directory (a zip, say), whatever `strict` says. |
 | `MissingTypeHintError` | An adapter constructor parameter without a default has no annotation, or one that is not a port. |
-| `InjectionCycleError` | Constructor resolution loops back on an adapter already under construction. |
+| `InjectionCycleError` | Constructor resolution loops back on an adapter already under construction. A loop through a `SINGLETON` is found before anything is built. |
 
 A few mistakes are caught by plain Python exceptions instead: an invalid environment name or
 `lifecycle` string raises `ValueError`; bare `@Invert`, the `@Invert` shape mistakes listed under
@@ -422,12 +424,36 @@ are never confused.
 The limitations are prices paid for a single process-wide container:
 
 - **One container per process.** There is no second, independent `Idunn()`.
-- **Not fully thread-safe.** Creating the singleton and registration are locked, the catalog is
-  copy-on-write (a registration swaps in a whole new snapshot, so a reader never sees half of one),
-  and `bootstrap` is safe from any thread, during an import included. The singleton cache is still
-  plain, unlocked state, because wiring is meant to happen once, on one thread, at startup. Do
-  that, then resolve; two threads racing to build the same `SINGLETON` for the first time may each
-  walk away with their own.
+- **Thread-safety, with fine print.** Wiring is meant to happen once, at startup, but first use in
+  a web worker is concurrent whatever the startup script intended, so every piece is safe to hit
+  from many threads:
+  - *Registration* is copy-on-write: a batch swaps in a whole new catalog under one lock, and
+    readers never lock and never see half a registration.
+  - *`bootstrap`* runs one discovery per root and holds no lock while modules import, so it is
+    safe from any thread, during an import included.
+  - *Each `SINGLETON` is built once.* A first build takes a lock of that adapter's own and checks
+    the cache again inside it, so racing threads get one instance between them. The warm path is a
+    dictionary lookup with no lock, and unrelated singletons never wait on each other.
+  - *A dependency cycle between singletons raises `InjectionCycleError` before any lock is taken*,
+    even when two threads race it, so it can never turn into two threads each holding half of it.
+
+  The fine print, stated plainly:
+  - `reset()` is test tooling for one thread. A build racing it finishes into the generation it
+    started in and is forgotten with it, but do not reset under live traffic.
+  - A singleton constructor holds its lock until it returns. If it imports modules or calls
+    `bootstrap`, and another thread is importing a module that needs that same singleton, the two
+    can deadlock. Build-once leaves no way round that, so keep imports out of constructors.
+  - For the same reason, a constructor must never wait on another thread that needs the very
+    singleton being built.
+  - An `@Invert()` consumer created *inside* a constructor while a singleton is being built (in
+    the singleton's own constructor or a `TRANSIENT`'s beneath it) is part of that build: it
+    picks up the path at the innermost singleton, so a loop through it raises
+    `InjectionCycleError`, on one thread or two, instead of recursing or deadlocking. A loop made
+    only of `TRANSIENT`s, closed by a consumer built inside one of their constructors, still ends
+    in `RecursionError`. No lock is involved there, so it cannot hang, and the graph is broken
+    either way.
+  - Free-threaded builds (3.13t, 3.14t) should be fine, since the design leans only on atomic
+    reference reads and single dictionary operations, but CI does not run one.
 - **Test isolation is your job.** See [above](#test-isolation).
 
 The non-features are deliberate, so there is no point hunting for them:

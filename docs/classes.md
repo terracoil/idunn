@@ -108,10 +108,11 @@ are at least required to agree on the borders.
 the full `IdunnError` hierarchy. It contains no logic of its own (Public, Passive). Everything else
 stays home: from `domain/`, the `AdapterDeclaration`, `AdapterMetadata`, `Catalog`,
 `FunctionShape`, `InvertDeclaration`, `ParameterPlan` and `PortBinding` types; all of `internal/`
-(`InversionMapper`, `InversionResolver`, `InversionValidator`, `ConstructorPlanner`, `LazyPlan`,
-`AutoDiscovery`, `BootstrapGate`, `BootstrapFlight`, `ReportMerger`, `DecoratorSupport`,
-`PortRegistry`); and all of `util/` (`Environment`, `ImportContext`, `MetaSingleton`,
-`QualifiedName`). What users never import, nobody has to keep compatible.
+(`InversionMapper`, `InversionResolver`, `InversionValidator`, `ConstructionStack`,
+`ConstructorPlanner`, `LazyPlan`, `AutoDiscovery`, `BootstrapGate`, `BootstrapFlight`,
+`ReportMerger`, `DecoratorSupport`, `PortRegistry`); and all of `util/` (`Environment`,
+`ImportContext`, `KeyedLocks`, `MetaSingleton`, `QualifiedName`). What users never import, nobody
+has to keep compatible.
 
 ---
 
@@ -160,7 +161,7 @@ covers the family.
 | `AdapterNotFoundError` | No active adapter is registered for a requested port and the parameter is not optional. |
 | `DiscoveryError` | A module below the discovery root fails to import and `strict=True`, or, whatever `strict` says, the root has a `__path__` entry that is not a directory (a zip). The root's own import errors propagate unwrapped. |
 | `MissingTypeHintError` | An adapter constructor parameter without a default has no annotation, or one that is not a port. |
-| `InjectionCycleError` | Constructor dependency resolution loops back on an adapter already under construction. |
+| `InjectionCycleError` | Constructor dependency resolution loops back on an adapter already under construction. A loop through a `SINGLETON` is found by a dry walk before anything is built, so threads racing one both raise instead of deadlocking. |
 
 ---
 
@@ -172,7 +173,8 @@ covers the family.
 |------|-------|--------|---------|----------|-------------|------------------|
 | `app/idunn.py` | `Idunn` | Active | Thin **facade** and process-wide singleton (`metaclass=MetaSingleton`); `Idunn()` takes no arguments, so the environment is chosen by `IDUNN_ENV` or `reset(environment=...)`. Public surface is `autodiscover()`, `bootstrap()` (a once-per-root `autodiscover` for library entry points, delegated to `BootstrapGate`), `reset()`, `describe()` and the read-only `environment` property; owns one `InversionMapper`, one `InversionResolver` and one `BootstrapGate` and delegates. `@Invert` reaches resolution through one private door, `_inject(parameter)`, which takes a `ParameterPlan` and lets the resolver decide tolerance. No public `resolve`/`register_*`, by design. | Public | — | — |
 | `internal/inversion_mapper.py` | `InversionMapper` | Active | Owns the `Catalog`. Writes go through `register_batch` (ports, then adapters) under one write lock: copy once, skip what is already registered, validate each new adapter against its slot, swap once, so a batch lands whole or not at all; `register_port`/`register_adapter` are batches of one. Reads (`find`, `select`, `bindings`, and the `catalog`/`ports` properties the tests use) take one snapshot and never lock, and `bindings()` emits the `PortBinding`s behind `describe()`. | Hidden | — | — |
-| `internal/inversion_resolver.py` | `InversionResolver` | Active | The construction engine: recursive, plan-driven resolution, the in-progress cycle stack, the `SINGLETON` instance cache and a per-adapter-class plan cache (`_plans`, filled on first build by `ConstructorPlanner.plan_adapter`, dropped by `clear()`). `inject(parameter=...)` is the facade's door; adapter parameters go through the same private `_inject`, so a tolerant parameter with no active adapter gets its fallback in both places. Asks `InversionMapper` for selections; an adapter constructor's own `@Invert` keys and map are honoured, undecorated ones resolve unkeyed. | Hidden | — | — |
+| `internal/construction_stack.py` | `ConstructionStack` | Active (thread-local) | A `threading.local` holding `current`, the construction stack of the `SINGLETON` build running on this thread (class-level default `()`, so a thread that never published reads a plain attribute). `publishing(stack)` is a context manager that sets it for the build and restores the outer value, error or not. `inject` seeds from it, which makes a consumer built inside a constructor an ordinary edge for the cycle walk and the stack check; a worker thread a constructor starts begins empty. Published around singleton builds only, for speed. Not re-exported from `idunn.internal`. | Hidden | — | — |
+| `internal/inversion_resolver.py` | `InversionResolver` | Active | The construction engine: recursive, plan-driven resolution, the in-progress cycle stack, the `SINGLETON` instance cache and a per-adapter-class plan cache (`_plans`, filled on first build by `ConstructorPlanner.plan_adapter`, dropped by `clear()`). `inject(parameter=...)` is the facade's door; adapter parameters go through the same private `_inject`, so a tolerant parameter with no active adapter gets its fallback in both places. Asks `InversionMapper` for selections; an adapter constructor's own `@Invert` keys and map are honoured, undecorated ones resolve unkeyed. Each `SINGLETON` is built once: the warm path is a lock-free lookup, and a miss runs a dry cycle walk (no construction, no lock; it follows the build's selections and raises `InjectionCycleError` for a loop) before building under the adapter's own lock from `KeyedLocks` and checking the cache again inside it. Its generation, `(instances, locks)`, is read once per `inject` and swapped whole by `clear()`, so a build racing `reset()` lands in the discarded one. A singleton build publishes its stack in a `ConstructionStack`, and `inject` starts from it, so an `@Invert()` consumer created inside the constructor continues the path and a loop through it raises `InjectionCycleError` (U16). | Hidden | — | — |
 | `internal/constructor_planner.py` | `ConstructorPlanner` | Active (stateless) | The one rulebook for which parameters get injected. `check_shape()` applies the shape rules from the code object at decoration (every mapped or keyed name is a parameter and keyword-only; `TypeError`); `plan()` applies the annotation rules from the type hints (no map entry on a port-annotated parameter, `keys` on ports only; `InvalidPortError`) and builds the `ParameterPlan`s; `plan_adapter()` does the same for an adapter constructor and also refuses non-port parameters without defaults (`MissingTypeHintError`) and positional-only ports (`TypeError`). `KEYWORD_ONLY_PORTS` (on) is where the rule that port-annotated parameters of an `@Invert` function be keyword-only lives; it is not a toggle, since both wrappers read ports from `kwargs` alone. Undecorated adapter constructors are exempt. | Hidden | — | — |
 | `internal/lazy_plan.py` | `LazyPlan` | Active | One `@Invert` function's plan, kept in the wrapper's closure: `try_now()` plans at decoration and swallows only `NameError` (a forward reference), `get()` plans on first call if needed and never caches a failure, `ready` says which happened. | Hidden | — | — |
 | `internal/inversion_validator.py` | `InversionValidator` | Active (stateless) | Stateless checks: adapter-class validity (a backstop for declarations attached without `@Adapter`), duplicates within one `(port, key)` slot in overlapping envs (checked against that slot only, so validation stays linear), and instance-satisfies-port. Called by the mapper and resolver; raises `IdunnError`s. Not re-exported from `idunn.internal`. | Hidden | — | — |
@@ -184,6 +186,7 @@ covers the family.
 | `internal/port_registry.py` | `PortRegistry` | Active (process-wide state) | `WeakSet` of the Protocols decorated with `@Port`: `mark()` records one, `is_port()` checks exact class identity. Replaces a marker attribute, which Python 3.11 would count as a protocol member and so break structural adapters. Subclasses of a port are not ports. | Hidden | — | — |
 | `util/environment.py` | `Environment` | Active (value + logic) | Frozen value object holding a resolved env `name`, plus `current()` (resolve from argument, then `IDUNN_ENV`, then `local`) and `normalize()` (strip, lowercase, `_` to `-`, blank to `local`, then validate). Reached at `Idunn()` construction, on `reset()`, and when `@Adapter(envs=...)` is normalized. | Hidden | — | Yes: `normalize()` is a generic slug normalizer. |
 | `util/import_context.py` | `ImportContext` | Active (stateless) | `active()` walks the current thread's frames for `<frozen importlib._bootstrap>`, which is on the stack whenever `importlib` holds a module lock, loaders' `exec_module` and C-extension init included (a stray match only costs a spare discovery). No frame support means `True`, the safe answer. Used by `BootstrapGate` to decide who must never wait. | Hidden | — | Yes: "am I inside an import?" is project-agnostic. |
+| `util/keyed_locks.py` | `KeyedLocks` | Active (lock registry) | Generic `KeyedLocks[K]`: `for_key(key)` returns the same `RLock` for the same key, made on first request (a lock-free `dict.get`, then `setdefault` under a guard `Lock` on a miss, so two threads asking at once share one lock). Re-entrant so a holder coming back for its own key on the same thread fails loudly elsewhere rather than deadlocking on itself. Never drops a lock; the owner replaces the whole object to start over. Used by `InversionResolver` for one lock per `SINGLETON` adapter class. | Hidden | — | Yes: per-key locking is project-agnostic. |
 | `util/meta_singleton.py` | `MetaSingleton` | Active | Metaclass that caches one instance per class, making `Idunn()` a process-wide singleton. `__call__` takes no arguments, because a singleton can only honor them once. | Hidden | — | Yes: a generic singleton metaclass. |
 | `util/qualified_name.py` | `QualifiedName` | Active | Stateless `module.QualName` renderer for any object (`repr` for anything without a qualified name, and for parameterized aliases), used by every error message, discovery reports, `describe()` and binding sort order. | Hidden | — | Yes: a generic one-liner, small enough to forget it exists. |
 
@@ -221,10 +224,10 @@ is the README's `my_app` layout as a **discoverable package**, run from the repo
   could become a public introspection type if `describe()` ever grows a structured sibling. Until
   someone asks, it stays a string.
 - **Reusable bits worth extracting.** `MetaSingleton`, `Environment.normalize` (slug normalizer),
-  `QualifiedName`, and `AutoDiscovery`'s module-scan helpers are the most project-agnostic code in
-  the package.
+  `QualifiedName`, `KeyedLocks`, and `AutoDiscovery`'s module-scan helpers are the most
+  project-agnostic code in the package.
 - **Genuinely hidden classes.** The engine trio (`InversionMapper`, `InversionResolver`,
   `InversionValidator`), plus `ConstructorPlanner`, `LazyPlan`, `AutoDiscovery`,
-  `DecoratorSupport`, `PortRegistry`, `MetaSingleton`, `Environment` and `QualifiedName`, are
-  never meant to be imported by end users. They sit behind the `Idunn` facade, which is where they
-  are happiest.
+  `DecoratorSupport`, `PortRegistry`, `KeyedLocks`, `MetaSingleton`, `Environment` and
+  `QualifiedName`, are never meant to be imported by end users. They sit behind the `Idunn` facade,
+  which is where they are happiest.

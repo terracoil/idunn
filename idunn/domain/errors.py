@@ -43,4 +43,9 @@ class MissingTypeHintError(IdunnError):
 
 
 class InjectionCycleError(IdunnError):
-  """Raised when constructor resolution loops back to an adapter that is still being built."""
+  """Raised when constructor resolution loops back to an adapter that is still being built.
+  A loop through a ``SINGLETON`` is caught by a dry walk before anything is built, so two threads
+  racing one can never end up holding half of it each. A loop closed by an ``@Invert()`` consumer
+  created inside a constructor during a singleton's build is caught too, once that consumer is
+  made: it continues the build's path instead of starting a fresh one.
+  """

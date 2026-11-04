@@ -37,14 +37,14 @@ Idunn is a constructor-time IoC toolkit: **Port → Adapter → `@Invert` consum
 | Layer | Holds | May import |
 |-------|-------|------------|
 | `idunn/app/` | `Port` (`port.py`), `Adapter` (`adapter.py`), `Invert` (`invert.py`), `Idunn` facade (`idunn.py`) | anything |
-| `idunn/internal/` | `InversionMapper`, `InversionResolver`, `InversionValidator`, `ConstructorPlanner`, `LazyPlan`, `AutoDiscovery`, `BootstrapGate`, `BootstrapFlight`, `ReportMerger`, `DecoratorSupport`, `PortRegistry` | domain, util |
+| `idunn/internal/` | `InversionMapper`, `InversionResolver`, `InversionValidator`, `ConstructionStack`, `ConstructorPlanner`, `LazyPlan`, `AutoDiscovery`, `BootstrapGate`, `BootstrapFlight`, `ReportMerger`, `DecoratorSupport`, `PortRegistry` | domain, util |
 | `idunn/domain/` | frozen dataclasses (`AdapterDeclaration`, `AdapterMetadata`, `Catalog`, `FunctionShape`, `InvertDeclaration`, `ParameterPlan`, `PortBinding`), `LifecycleEnum`, `ReportMap` TypedDict, the `IdunnError` hierarchy | util |
-| `idunn/util/` | `Environment`, `ImportContext`, `MetaSingleton`, `QualifiedName` | nothing internal |
+| `idunn/util/` | `Environment`, `ImportContext`, `KeyedLocks`, `MetaSingleton`, `QualifiedName` | nothing internal |
 
 No modules may live at `idunn/` root besides `__init__.py`. Cross-package imports go through each
 layer's `__init__.py` re-exports (e.g. `from idunn.domain import ...`), never module paths.
-`InversionValidator`, `BootstrapFlight` and `ReportMerger` are intentionally *not* re-exported from
-`idunn.internal`: only their siblings use them.
+`InversionValidator`, `ConstructionStack`, `BootstrapFlight` and `ReportMerger` are intentionally
+*not* re-exported from `idunn.internal`: only their siblings use them.
 
 ### Public surface
 
@@ -129,6 +129,26 @@ pins this set, so changing it means changing that test. The engine classes are n
   every port by keyword.
 - **Resolved instances are structurally checked** against the port (`isinstance` on the
   runtime-checkable Protocol) after construction; a mismatch raises `InvalidAdapterError`.
+- **Each `SINGLETON` is built once per generation, under its own lock.** The warm path is one
+  lock-free `dict.get`. A miss first runs the cycle walk (`_assert_acyclic`) holding nothing, then
+  takes the adapter's `RLock` from `KeyedLocks` and checks the cache again inside it. The resolver's
+  generation is `(instances, locks)`, read once in `inject` and passed down the whole recursion;
+  `clear()` swaps in a new one, so a build racing `reset()` lands in the discarded dict. Locks are
+  only taken along dependency edges, so acyclic graphs cannot invert and unrelated singletons never
+  wait on each other; the walk takes cyclic graphs off the table before any lock is held. A
+  singleton build publishes its stack, itself included, in a `ConstructionStack` (a
+  `threading.local`) for the length of the build, and `inject` starts from that instead of `()`:
+  an `@Invert()` consumer created inside the constructor continues the path, so a loop through it
+  is an edge the walk and the stack check both see (U16), and worker threads start empty.
+  Singleton builds only: publishing around every TRANSIENT build cost ~10% of a warm transient
+  resolve, so a consumer built inside a transient constructor starts at the innermost singleton,
+  which still covers every lock the thread holds. The lock stays an `RLock` as a backstop for
+  same-thread re-entry, and it is never shared with `BootstrapGate`.
+  Documented limits (ADVANCED, "Thread-safety, with fine print"): a constructor holds its lock
+  while it runs, so one that imports modules or calls `bootstrap` can deadlock against a thread
+  importing a module that needs the same singleton, and one that waits on a thread needing that
+  singleton deadlocks outright. A loop made only of `TRANSIENT`s and closed by a consumer built
+  inside one of their constructors is still a `RecursionError`; no lock is involved, so no hang.
 
 ### Resolution flow
 
@@ -141,7 +161,16 @@ parameter through `_inject` and so recursively through `_resolve`. Planning an a
 not), and `TypeError` for a positional-only port, since the resolver passes keywords; `*args` and
 `**kwargs` are skipped, and a constructor with no code object (`object.__init__`) has nothing to
 inject. Re-entry into an adapter already on the construction stack raises `InjectionCycleError`.
-`SINGLETON` adapters are cached per adapter class; `TRANSIENT` (the default) rebuild every time.
+`TRANSIENT` (the default) rebuilds every time. A `SINGLETON` is cached per adapter class in the
+captured generation; on a miss, `_build_once` runs the cycle walk, then builds under the adapter's
+lock. The walk is a depth-first dry run from the adapter (its path starts with the current stack,
+so its message names the same `a -> b -> a` path) over the cached plans, following exactly the
+build's selections: a tolerant parameter with nothing active has no edge, a singleton already
+built is a leaf, and a required parameter with no adapter halts the walk, because the build raises
+`AdapterNotFoundError` there and never reaches anything beyond it. A `done` set keeps it linear per
+miss. The construction-time stack check stays: it is what catches loops among `TRANSIENT`s.
+`inject` seeds its stack from the thread's `ConstructionStack`, which a singleton build publishes
+around itself, so a consumer built mid-build extends the path rather than starting a new one.
 
 The index is a frozen `Catalog` (domain) that the mapper replaces whole. Readers (`find`, `select`,
 `bindings`, `ports`) read `self._catalog` once and never lock, so `describe()` comes from one
@@ -193,6 +222,11 @@ newly registered by that call.
   `Wiring` (a standalone mapper + resolver) for resolution tests, `Container.install(...)` to push
   adapters into the singleton, as one batch, for `@Invert` integration tests, and `Resolve.port`
   to build one port through the facade's private door as a required `ParameterPlan`.
+- Thread tests start their targets through `Racer` (`_support.py`): daemon threads behind one
+  barrier, with a thread still alive after the timeout recorded as a `TimeoutError`, so a deadlock
+  fails the test instead of hanging the suite. The `eager_switching` fixture in `conftest.py` sets
+  `sys.setswitchinterval(1e-6)` for races that the GIL would otherwise hide. Run concurrency tests
+  repeatedly (ten times per interpreter) before calling them green.
 - Tests and `examples/` are type-checked under strict mypy; keep them fully annotated.
 - Tests import public names from `idunn` exactly as users do, and so do the generated-module source
   strings that tests write to `tmp_path`. Non-public names come from the highest re-exporting layer
