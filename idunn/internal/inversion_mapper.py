@@ -116,6 +116,13 @@ class InversionMapper:
     """
     return bool(self.register_batch(ports=(port,))[0])
 
+  def restore(self, catalog: Catalog) -> None:
+    """Swap back a catalog read earlier from :attr:`catalog`, undoing every batch since.
+    No copy needed: a catalog never changes, so the old one is exactly as it was handed out.
+    """
+    with self._write_lock:
+      self._catalog = catalog
+
   def select(self, *, port: type[Any], key: str | None, environment: str) -> AdapterMetadata:
     """Like :meth:`find`, but raise :class:`AdapterNotFoundError` when nothing matches."""
     found: AdapterMetadata | None = self.find(port=port, key=key, environment=environment)

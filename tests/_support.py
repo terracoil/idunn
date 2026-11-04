@@ -1,8 +1,8 @@
 """Test seams for driving the internal inversion engine.
 The public ``Idunn`` facade has no register or resolve, on purpose, which is inconvenient only for
-the people testing it. Engine-level tests drive :class:`Wiring` (a standalone mapper and
-resolver), ``@Invert()`` integration tests use :class:`Container` to install adapters into the
-process singleton, :class:`Resolve` builds a port by hand through the facade's private door,
+the people testing it. ``@Invert()`` integration tests install adapters with the same
+``idunn.testing.Harness`` users get. Engine-level tests drive :class:`Wiring` (a standalone mapper
+and resolver), :class:`Resolve` builds a port by hand through the facade's private door,
 discovery tests write throwaway packages with :class:`PackageWriter`, :class:`ImportingCall`
 runs a callable as a module body, for tests that need to be mid-import, and :class:`Racer` starts
 threads together and turns a deadlock into a failure instead of a hung suite.
@@ -56,15 +56,6 @@ class Wiring:
   def resolve(self, port: type[Any], *, key: str | None = None) -> Any:
     """Resolve a port into an adapter instance for this engine's environment."""
     return self.resolver.inject(parameter=Resolve.required(port, key), environment=self.environment)
-
-
-class Container:
-  """Installs adapters into the process-wide ``Idunn()`` singleton that ``@Invert`` reads."""
-
-  @staticmethod
-  def install(*adapters: type[Any]) -> None:
-    """Register the adapters into the singleton's catalog as one batch: all of them, or none."""
-    Idunn()._mapper.register_batch(adapters=adapters)
 
 
 class Racer:

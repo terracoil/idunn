@@ -290,8 +290,10 @@ possible, and not one apple simpler.
 
 `Idunn()` is a single process-wide container; call it a thousand times and you get back the same
 barrel of apples. That choice buys simplicity at a few honest prices: there is no second container,
-no scopes, and test isolation is your job via `Idunn().reset()`. When you want to see the wired
-graph, `Idunn().describe()` returns a readable snapshot of the active bindings.
+no scopes, and test isolation is your job, via `Idunn().reset()` between tests and
+`idunn.testing.Harness` within one, which wires a fake for a single block and then puts everything
+back. When you want to see the wired graph, `Idunn().describe()` returns a readable snapshot of
+the active bindings.
 
 These are deliberate trade-offs, not oversights. Wiring is meant to happen once, at startup, and a
 container built for that needs no scopes and no second instance. Idunn declines to pretend
@@ -308,7 +310,7 @@ path barely notices: readers never lock, and a built singleton is one dictionary
 
 - **[README](../README.md)**: install, discovery, and the normal-usage example.
 - **[`ADVANCED.md`](./ADVANCED.md)**: environments and keys, the full `@Invert` contract,
-  discovery options, `describe()`, test isolation, exceptions, and the non-features.
+  discovery options, `describe()`, testing with `idunn.testing`, exceptions, and the non-features.
 - **[`classes.md`](./classes.md)**: a class-by-class catalog of the package.
 
 The everyday API never grows past the three decorators and one discovery call. Everything else is a

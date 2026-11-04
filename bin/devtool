@@ -4,6 +4,7 @@
 Consolidates all development scripts into a single FreyjaCLI implementation.
 """
 import glob
+import hashlib
 import json
 import os
 import re
@@ -20,7 +21,8 @@ from freyja import FreyjaCLI
 from freyja.help.help_formatter import HierarchicalHelpFormatter
 
 # Add the project root to the Python path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+REPO_ROOT: Path = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
 
 # Configure cache directories to use tmp/
 # os.environ.setdefault('RUFF_CACHE_DIR', str(project_src / 'tmp' / '.ruff_cache'))
@@ -1155,6 +1157,11 @@ class FreyjaDevTools:
   class Test:
     """Testing operations."""
 
+    # `test all` repeats the suite on this Python, where PEP 649 defers annotations: the two
+    # contract tests that need it skip on the project interpreter and only ever run here.
+    LATEST_MINOR: str = '3.14'
+    LATEST_VENV: Path = Path('tmp') / f'venv-{LATEST_MINOR}'
+
     def __init__(
       self,
       parent,
@@ -1171,7 +1178,7 @@ class FreyjaDevTools:
       self.verbose: bool = verbose
 
     def _build_test_cmd(self, test_mark: str | None = None) -> list[str]:
-      """Build the pytest command; ``test_mark`` is a ``-m`` expression, or None for every test."""
+      """Build the poetry pytest command; ``test_mark`` is a ``-m`` expression, or None for all."""
       parent = self.parent
       cmd_parts: list[str] = ['poetry', 'run', 'pytest']
 
@@ -1180,30 +1187,156 @@ class FreyjaDevTools:
           [f'--cov={parent.project_name}', '--cov-report=term-missing', '--cov-report=html']
         )
 
+      return cmd_parts + self._pytest_options(test_mark)
+
+    @staticmethod
+    def _passed(result: bool | CompletedProcess) -> bool:
+      """Whether a command succeeded. A finished process is truthy whatever its exit code, so ask."""
+      return result is True or (isinstance(result, CompletedProcess) and result.returncode == 0)
+
+    def _pytest_options(self, test_mark: str | None = None) -> list[str]:
+      """The options every interpreter's run shares; coverage belongs to the poetry run alone."""
+      options: list[str] = []
+
       if self.verbose:
-        cmd_parts.append('-sv')
+        options.append('-sv')
 
       if self.parallel:
-        cmd_parts.extend(['-n', 'auto'])
+        options.extend(['-n', 'auto'])
 
       if test_mark is not None:
-        cmd_parts.extend(['-m', test_mark])
+        options.extend(['-m', test_mark])
 
       if self.pattern:
-        cmd_parts.extend(['-k', self.pattern])
+        options.extend(['-k', self.pattern])
 
-      return cmd_parts
+      return options
+
+    def _report(self, label: str, passed: bool) -> None:
+      """Print one interpreter's verdict, so two runs never blur into one."""
+      self.parent._print(
+        f'{label}: {"passed" if passed else "FAILED"}', 'success' if passed else 'error'
+      )
+
+    def _project_python(self) -> str:
+      """Name the poetry interpreter by its version, or '?' when there is none to ask (a dry run)."""
+      found = self.parent._run_command(
+        ['poetry', 'run', 'python', '-c', 'import platform; print(platform.python_version())'],
+        capture_output=True,
+        cwd=str(REPO_ROOT),
+      )
+      version: str = found.stdout.strip() if isinstance(found, CompletedProcess) else ''
+      return f'Python {version or "?"} (poetry)'
+
+    def _newest_installed(self) -> str | None:
+      """Return the newest CPython 3.14.x pyenv has; free-threaded ``t`` builds need not apply."""
+      listed = self.parent._run_command(['pyenv', 'versions', '--bare'], capture_output=True)
+      stdout: str = listed.stdout if isinstance(listed, CompletedProcess) else ''
+      pattern: re.Pattern[str] = re.compile(rf'{re.escape(self.LATEST_MINOR)}\.\d+')
+      versions: list[str] = [
+        line.strip() for line in stdout.splitlines() if pattern.fullmatch(line.strip())
+      ]
+      return max(versions, key=lambda version: tuple(map(int, version.split('.'))), default=None)
+
+    def _latest_version(self) -> str | None:
+      """Pick the newest pyenv 3.14, installing pyenv's latest 3.14 first when there is none."""
+      parent = self.parent
+      version: str | None = self._newest_installed()
+      if version is None:
+        parent._print(
+          f'No Python {self.LATEST_MINOR} under pyenv; installing the latest...', 'warning'
+        )
+        parent._run_command(['pyenv', 'install', '--skip-existing', self.LATEST_MINOR])
+        version = self._newest_installed() or (self.LATEST_MINOR if parent.dry_run else None)
+      return version
+
+    def _latest_venv(self, version: str) -> Path | None:
+      """Return the 3.14 venv's python, rebuilt when it runs another version, with the project in it.
+      Reinstalls only when the venv is new or ``pyproject.toml`` changed since the last install,
+      which saves a few seconds a run and costs one stamp file.
+      """
+      parent = self.parent
+      venv: Path = REPO_ROOT / self.LATEST_VENV
+      python: Path = venv / 'bin' / 'python'
+      stamp: Path = venv / '.devtool-stamp'
+      wanted: str = (
+        f'{version} {hashlib.sha256((REPO_ROOT / "pyproject.toml").read_bytes()).hexdigest()}'
+      )
+
+      running: bool | CompletedProcess | None = None
+      if python.exists():
+        running = parent._run_command(
+          [str(python), '-c', 'import platform; print(platform.python_version())'],
+          capture_output=True,
+        )
+      ready: bool = isinstance(running, CompletedProcess) and running.stdout.strip() == version
+      if not ready:
+        parent._print(f'Building {self.LATEST_VENV} on pyenv Python {version}...', 'info')
+        ready = self._passed(
+          parent._run_command(
+            ['pyenv', 'exec', 'python', '-m', 'venv', '--clear', str(venv)],
+            cwd=str(REPO_ROOT),
+            env={**os.environ, 'PYENV_VERSION': version},
+          )
+        )
+
+      current: bool = ready and stamp.exists() and stamp.read_text(encoding='utf-8') == wanted
+      if ready and not current:
+        plugins: list[str] = [
+          name
+          for name in FreyjaDevTools.dig(['tool', 'poetry', 'group', 'dev', 'dependencies'])
+          if name.startswith('pytest')
+        ]
+        parent._print(
+          f'Installing the project and {", ".join(plugins)} into {self.LATEST_VENV}...', 'info'
+        )
+        ready = self._passed(
+          parent._run_command(
+            [
+              str(python),
+              '-m',
+              'pip',
+              'install',
+              '--quiet',
+              '--disable-pip-version-check',
+              '-e',
+              '.',
+              *plugins,
+            ],
+            cwd=str(REPO_ROOT),
+          )
+        )
+        if ready and not parent.dry_run:
+          stamp.write_text(wanted, encoding='utf-8')
+
+      return python if ready else None
+
+    def _run_latest(self) -> tuple[str, bool]:
+      """Run the suite on the newest pyenv 3.14 in its own venv; return its label and verdict."""
+      parent = self.parent
+      version: str | None = self._latest_version()
+      python: Path | None = self._latest_venv(version) if version is not None else None
+      if python is None:
+        parent._print(f'Could not prepare Python {self.LATEST_MINOR} through pyenv', 'error')
+      passed: bool = python is not None and self._passed(
+        parent._run_command(
+          [str(python), '-m', 'pytest', *self._pytest_options()],
+          cwd=str(REPO_ROOT),
+          env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'},  # keep 3.14 bytecode out of the tree
+        )
+      )
+      return f'Python {version or self.LATEST_MINOR} ({self.LATEST_VENV})', passed
 
     def unit(
       self,
-    ) -> None:
+    ) -> int:
       """Run unit tests with configured options."""
       parent = self.parent
       parent._print('🧪 Running unit tests with coverage...', 'info')
 
       # Anything not marked integration is a unit test; nobody wants to badge every file.
       cmd_parts = self._build_test_cmd('not integration')
-      success = parent._run_command(cmd_parts)
+      success: bool = self._passed(parent._run_command(cmd_parts))
 
       if success:
         if self.coverage:
@@ -1211,14 +1344,15 @@ class FreyjaDevTools:
         parent._print('Unit tests completed successfully!', 'success')
       else:
         parent._print('Unit tests failed!', 'error')
+      return 0 if success else 1
 
-    def integration(self) -> None:
+    def integration(self) -> int:
       """Run integration tests with configured options."""
       parent = self.parent
       parent._print('🔗 Running integration tests...', 'info')
 
       cmd_parts = self._build_test_cmd('integration')
-      success = parent._run_command(cmd_parts)
+      success: bool = self._passed(parent._run_command(cmd_parts))
 
       if success:
         if self.coverage:
@@ -1226,21 +1360,30 @@ class FreyjaDevTools:
         parent._print('Integration tests completed successfully!', 'success')
       else:
         parent._print('Integration tests failed!', 'error')
+      return 0 if success else 1
 
-    def all(self) -> None:
-      """Run all tests (unit and integration) with configured options."""
+    def all(self) -> int:
+      """Run all tests on the project interpreter, then again on the newest pyenv Python 3.14."""
       parent = self.parent
-      parent._print('🧪 Running all tests (unit and integration)...', 'info')
+      parent._print(
+        '🧪 Running all tests (unit and integration) on the project interpreter...', 'info'
+      )
+      project_label: str = self._project_python()
+      project_passed: bool = self._passed(parent._run_command(self._build_test_cmd()))
+      if project_passed and self.coverage:
+        parent._print('📊 Coverage report generated in htmlcov/', 'info')
 
-      cmd_parts = self._build_test_cmd()
-      success = parent._run_command(cmd_parts)
+      parent._print(f'🧪 Running all tests again on Python {self.LATEST_MINOR} (pyenv)...', 'info')
+      latest_label, latest_passed = self._run_latest()
 
+      self._report(project_label, project_passed)
+      self._report(latest_label, latest_passed)
+      success: bool = project_passed and latest_passed
       if success:
-        if self.coverage:
-          parent._print('📊 Coverage report generated in htmlcov/', 'info')
-        parent._print('All tests completed successfully!', 'success')
+        parent._print('All tests completed successfully on both interpreters!', 'success')
       else:
         parent._print('Some tests failed!', 'error')
+      return 0 if success else 1
 
 
 if __name__ == '__main__':

@@ -21,8 +21,9 @@ import pytest
 from idunn import Adapter, AdapterNotFoundError, InvalidPortError, Invert, Port
 from idunn.domain import FunctionShape, InvertDeclaration
 from idunn.internal import ConstructorPlanner, LazyPlan
+from idunn.testing import Harness
 
-from _support import Container, PackageWriter
+from _support import PackageWriter
 
 
 @Port
@@ -230,8 +231,6 @@ def test_a_key_on_a_parameter_that_is_not_a_port_raises() -> None:
 
 
 def test_a_mapped_parameter_with_a_non_port_annotation_is_injected() -> None:
-  Container.install(GoldenBasket)
-
   class Feast:
     basket: object
 
@@ -239,7 +238,8 @@ def test_a_mapped_parameter_with_a_non_port_annotation_is_injected() -> None:
     def __init__(self, *, basket: object) -> None:
       pass
 
-  assert isinstance(Feast().basket, GoldenBasket)
+  with Harness.install(GoldenBasket):
+    assert isinstance(Feast().basket, GoldenBasket)
 
 
 def test_the_declaration_rides_on_the_wrapper() -> None:
@@ -280,22 +280,20 @@ def test_a_forward_referenced_port_and_a_self_reference_decorate_and_construct(
   module = Sources.load(
     writer, 'contract_forward', Sources.FORWARD.format(future='from __future__ import annotations')
   )
-  Container.install(module.LaterBasket)
+  with Harness.install(module.LaterBasket):
+    child = module.Node(parent=module.Node())
 
-  child = module.Node(parent=module.Node())
-
-  assert module.Feast().basket.take() == 'later'
-  assert isinstance(child.parent, module.Node)
-  assert child.basket.take() == 'later'
+    assert module.Feast().basket.take() == 'later'
+    assert isinstance(child.parent, module.Node)
+    assert child.basket.take() == 'later'
 
 
 @pytest.mark.skipif(sys.version_info < (3, 14), reason='3.11-3.13 evaluate the hint at def')
 def test_without_the_future_import_314_defers_too(writer: PackageWriter) -> None:
   module = Sources.load(writer, 'contract_forward_314', Sources.FORWARD.format(future=''))
-  Container.install(module.LaterBasket)
-
-  assert module.Feast().basket.take() == 'later'
-  assert module.Node().parent is None
+  with Harness.install(module.LaterBasket):
+    assert module.Feast().basket.take() == 'later'
+    assert module.Node().parent is None
 
 
 @pytest.mark.skipif(sys.version_info < (3, 14), reason='3.11-3.13 evaluate the hint at def')
@@ -348,13 +346,12 @@ def test_a_deferred_key_on_a_non_port_raises_at_the_first_call(writer: PackageWr
 def test_a_deferred_plan_is_retried_until_the_name_exists(writer: PackageWriter) -> None:
   module = Sources.load(writer, 'contract_dangling_retry', Sources.DANGLING)
   pick = Invert()(module.pick)
-  Container.install(GoldenBasket)
+  with Harness.install(GoldenBasket):
+    with pytest.raises(NameError):
+      pick()  # a failed plan is not cached
+    vars(module)['LaterPort'] = BasketPort
 
-  with pytest.raises(NameError):
-    pick()  # a failed plan is not cached
-  vars(module)['LaterPort'] = BasketPort
-
-  assert pick() == 'golden'
+    assert pick() == 'golden'
 
 
 def test_lazy_plan_plans_eagerly_when_it_can_and_lazily_when_it_must(
@@ -434,18 +431,15 @@ def test_too_many_positionals_raise_before_anything_is_built() -> None:
     def __init__(self, host: str, *, basket: BasketPort) -> None:
       self.host = host
 
-  Container.install(CountedBasket)
-
-  with pytest.raises(TypeError, match=r'Feast\.__init__ takes 1 positional argument but 2 were'):
-    Feast('Bragi', CountedBasket())
-  assert built == ['basket']  # only the one the caller made: nothing was injected
-  assert Feast('Bragi').host == 'Bragi'  # a lone positional can only mean host
-  assert built == ['basket', 'basket']
+  with Harness.install(CountedBasket):
+    with pytest.raises(TypeError, match=r'Feast\.__init__ takes 1 positional argument but 2 were'):
+      Feast('Bragi', CountedBasket())
+    assert built == ['basket']  # only the one the caller made: nothing was injected
+    assert Feast('Bragi').host == 'Bragi'  # a lone positional can only mean host
+    assert built == ['basket', 'basket']
 
 
 def test_a_star_args_consumer_takes_any_number_of_positionals() -> None:
-  Container.install(GoldenBasket)
-
   class Feast:
     basket: BasketPort
 
@@ -453,7 +447,8 @@ def test_a_star_args_consumer_takes_any_number_of_positionals() -> None:
     def __init__(self, *guests: str, basket: BasketPort) -> None:
       self.guests = guests
 
-  feast = Feast('Bragi', 'Iðunn')
+  with Harness.install(GoldenBasket):
+    feast = Feast('Bragi', 'Iðunn')
 
   assert feast.guests == ('Bragi', 'Iðunn')
   assert feast.basket.take() == 'golden'
@@ -479,10 +474,9 @@ def test_undecorated_adapter_constructors_may_still_take_ports_positionally() ->
     def __init__(self, *, service: ServicePort) -> None:
       pass
 
-  Container.install(GoldenBasket, BasketService)
-
-  assert ConstructorPlanner.KEYWORD_ONLY_PORTS is True
-  assert Feast().service.run() == 'golden'
+  with Harness.install(GoldenBasket, BasketService):
+    assert ConstructorPlanner.KEYWORD_ONLY_PORTS is True
+    assert Feast().service.run() == 'golden'
 
 
 def test_function_shape_reads_names_kinds_defaults_and_the_positional_limit() -> None:
@@ -536,8 +530,6 @@ def test_invert_above_a_method_descriptor_raises_at_decoration(kind: type[Any]) 
 
 
 def test_invert_beneath_a_method_descriptor_works_via_class_and_instance() -> None:
-  Container.install(GoldenBasket)
-
   class Kit:
     @staticmethod
     @Invert()
@@ -549,5 +541,6 @@ def test_invert_beneath_a_method_descriptor_works_via_class_and_instance() -> No
     def named(cls, *, basket: BasketPort) -> str:
       return f'{cls.__name__}:{basket.take()}'
 
-  assert (Kit.peek(), Kit().peek()) == ('golden', 'golden')
-  assert (Kit.named(), Kit().named()) == ('Kit:golden', 'Kit:golden')
+  with Harness.install(GoldenBasket):
+    assert (Kit.peek(), Kit().peek()) == ('golden', 'golden')
+    assert (Kit.named(), Kit().named()) == ('Kit:golden', 'Kit:golden')

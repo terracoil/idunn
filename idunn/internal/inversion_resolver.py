@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from threading import Lock
+from types import MappingProxyType
 from typing import Any, ClassVar
 
 from idunn.domain import (
   AdapterMetadata,
+  EngineSnapshot,
   InjectionCycleError,
   InvalidPortError,
   LifecycleEnum,
   ParameterPlan,
+  SlotKey,
 )
 from idunn.util import KeyedLocks, QualifiedName
 
@@ -35,10 +40,15 @@ class InversionResolver:
   the graph for cycles holding nothing, then builds under that adapter's own lock and checks the
   cache again inside it. The warm path never locks, and unrelated singletons never queue on each
   other, since a lock is only ever taken on the way down a dependency edge.
+  Overrides (``idunn.testing``) answer a ``(port, key)`` ahead of selection, so a stand-in needs no
+  adapter, no environment and no luck; outside a test there are none, and the hot path pays one
+  identity test for the whole feature.
   """
 
   # Cache-miss sentinel: a cached singleton may be falsy, so None cannot double as 'not cached'.
   _MISSING: ClassVar[object] = object()
+  # What snapshot() reports when nothing is overridden: a snapshot always holds a real mapping.
+  _NO_OVERRIDES: ClassVar[Mapping[SlotKey, object]] = MappingProxyType({})
 
   def __init__(self, mapper: InversionMapper) -> None:
     """Bind the resolver to the catalog it asks for adapter selections."""
@@ -48,14 +58,21 @@ class InversionResolver:
     self._building: ConstructionStack = ConstructionStack()
     # Per adapter class, filled on first build. No lock: a racing duplicate is an identical plan.
     self._plans: dict[type[Any], tuple[ParameterPlan, ...]] = {}
+    # Copy-on-write like the catalog: replaced whole under the lock, read without it. None rather
+    # than empty when there are none, because `is not None` is the cheapest test Python has and
+    # every resolve pays it; an empty mapping's truth test cost twice as much.
+    self._overrides: Mapping[SlotKey, object] | None = None
+    self._override_lock: Lock = Lock()
 
   def clear(self) -> None:
-    """Drop every cached singleton instance and constructor plan.
+    """Drop every cached singleton instance, constructor plan and override.
     Swaps in new containers instead of emptying the old ones, so a build still running lands its
     instance in the generation it started in, which nobody reads any more.
     """
     self._generation = ({}, KeyedLocks())
     self._plans = {}
+    with self._override_lock:
+      self._overrides = None
 
   def inject(self, *, parameter: ParameterPlan, environment: str) -> Any:
     """Fill ``parameter`` for ``environment``: its active adapter, or its fallback if tolerant.
@@ -70,6 +87,38 @@ class InversionResolver:
       stack=self._building.current,
       generation=self._generation,
     )
+
+  def override(self, *, port: type[Any], key: str | None, instance: object) -> None:
+    """Answer ``port`` and ``key`` with ``instance`` from now on, ahead of any adapter.
+    Checked here rather than at use, so a bad stand-in fails at the line that installed it: a
+    class that is not a ``@Port`` raises :class:`InvalidPortError`, and an instance that does not
+    satisfy the port raises :class:`InvalidAdapterError`, just as a built adapter would.
+    """
+    if not PortRegistry.is_port(port):
+      message = f'Cannot override a class that is not marked with @Port: {QualifiedName.of(port)}'
+      raise InvalidPortError(message)
+    InversionValidator.validate_instance(port=port, adapter=type(instance), instance=instance)
+    with self._override_lock:
+      self._overrides = MappingProxyType({**(self._overrides or {}), (port, key): instance})
+
+  def restore(self, snapshot: EngineSnapshot) -> None:
+    """Put back the snapshot's overrides and a copy of its singletons, as a whole new generation.
+    The copy and the fresh locks are the point: a build racing the restore finishes into the
+    generation it captured, which nobody reads any more, exactly as with :meth:`clear`. Overrides
+    go back first because a resolve captures its generation once but reads overrides as it goes:
+    the other order lets one starting between the swaps build a singleton against the departing
+    fake straight into the restored generation. Plans stay, since they depend only on the class.
+    """
+    with self._override_lock:
+      self._overrides = snapshot.overrides or None
+    self._generation = (dict(snapshot.instances), KeyedLocks())
+
+  def snapshot(self) -> tuple[Mapping[type[Any], Any], Mapping[SlotKey, object]]:
+    """Return a read-only copy of this generation's singletons, and the overrides as they stand.
+    Overrides are immutable, so they are shared; the singletons are copied because the live dict
+    keeps filling up after the picture is taken.
+    """
+    return MappingProxyType(dict(self._generation[0])), self._overrides or self._NO_OVERRIDES
 
   def _assert_acyclic(
     self,
@@ -159,13 +208,17 @@ class InversionResolver:
     environment: str,
     instances: dict[type[Any], Any],
   ) -> bool:
-    # One edge of the walk, chosen exactly as _inject and _resolve would choose it. A tolerant
-    # parameter with nothing active gets its fallback, so there is no edge; a built singleton is
-    # a leaf, because the build will not look inside it either.
-    found: AdapterMetadata | None = self._mapper.find(
-      port=parameter.port, key=parameter.key, environment=environment
+    # One edge of the walk, chosen exactly as _inject and _resolve would choose it. An override
+    # and a tolerant parameter with nothing active have no edge: the build hands over the stand-in
+    # or the fallback without building anything. A built singleton is a leaf, because the build
+    # will not look inside it either.
+    overridden: bool = self._overridden(parameter)
+    found: AdapterMetadata | None = (
+      None
+      if overridden
+      else self._mapper.find(port=parameter.port, key=parameter.key, environment=environment)
     )
-    halted: bool = found is None and not parameter.tolerant
+    halted: bool = found is None and not (parameter.tolerant or overridden)
     if found is not None and found.adapter in path:
       raise self._cycle((*path, found.adapter))
     if found is not None and found.adapter not in instances and found.adapter not in done:
@@ -186,10 +239,12 @@ class InversionResolver:
     stack: tuple[type[Any], ...],
     generation: SingletonGeneration,
   ) -> Any:
-    # A `Port | None` parameter, or any port parameter with a default, survives a missing adapter.
+    # A `Port | None` parameter, or any port parameter with a default, survives a missing adapter,
+    # unless an override stands in for it: then it gets the stand-in like anyone else.
     absent: bool = (
       parameter.tolerant
       and self._mapper.find(port=parameter.port, key=parameter.key, environment=environment) is None
+      and not self._overridden(parameter)
     )
     return (
       parameter.fallback
@@ -202,6 +257,10 @@ class InversionResolver:
         generation=generation,
       )
     )
+
+  def _overridden(self, parameter: ParameterPlan) -> bool:
+    overrides: Mapping[SlotKey, object] | None = self._overrides
+    return overrides is not None and (parameter.port, parameter.key) in overrides
 
   def _plan_for(self, adapter: type[Any]) -> tuple[ParameterPlan, ...]:
     plan: tuple[ParameterPlan, ...] | None = self._plans.get(adapter)
@@ -224,18 +283,22 @@ class InversionResolver:
     if not PortRegistry.is_port(port):
       message = f'Cannot resolve a class that is not marked with @Port: {QualifiedName.of(port)}'
       raise InvalidPortError(message)
-    metadata: AdapterMetadata = self._mapper.select(port=port, key=key, environment=environment)
-    if metadata.adapter in stack:
-      raise self._cycle((*stack, metadata.adapter))
-    instance: Any = generation[0].get(metadata.adapter, self._MISSING)  # the warm path: no lock
-    if instance is self._MISSING and metadata.lifecycle == LifecycleEnum.SINGLETON:
-      instance = self._build_once(
-        metadata=metadata, port=port, environment=environment, stack=stack, generation=generation
-      )
-    elif instance is self._MISSING:
-      instance = self._build(
-        metadata=metadata, port=port, environment=environment, stack=stack, generation=generation
-      )
+    overrides: Mapping[SlotKey, object] | None = self._overrides  # None outside a Harness block
+    if overrides is not None and (port, key) in overrides:
+      instance: Any = overrides[(port, key)]
+    else:
+      metadata: AdapterMetadata = self._mapper.select(port=port, key=key, environment=environment)
+      if metadata.adapter in stack:
+        raise self._cycle((*stack, metadata.adapter))
+      instance = generation[0].get(metadata.adapter, self._MISSING)  # the warm path: no lock
+      if instance is self._MISSING and metadata.lifecycle == LifecycleEnum.SINGLETON:
+        instance = self._build_once(
+          metadata=metadata, port=port, environment=environment, stack=stack, generation=generation
+        )
+      elif instance is self._MISSING:
+        instance = self._build(
+          metadata=metadata, port=port, environment=environment, stack=stack, generation=generation
+        )
     return instance
 
   def _walk(

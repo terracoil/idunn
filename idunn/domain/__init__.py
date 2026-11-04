@@ -3,6 +3,7 @@
 from .adapter_declaration import AdapterDeclaration
 from .adapter_metadata import AdapterMetadata
 from .catalog import Catalog, SlotKey
+from .engine_snapshot import EngineSnapshot
 from .errors import (
   AdapterNotFoundError,
   DiscoveryError,
@@ -25,6 +26,7 @@ __all__ = (
   'AdapterNotFoundError',
   'Catalog',
   'DiscoveryError',
+  'EngineSnapshot',
   'FunctionShape',
   'IdunnError',
   'InjectionCycleError',

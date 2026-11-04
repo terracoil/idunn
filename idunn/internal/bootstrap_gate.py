@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from threading import Lock
+from types import MappingProxyType
 
-from idunn.domain import ReportMap
+from idunn.domain import EngineSnapshot, ReportMap
 from idunn.util import ImportContext
 
 from .bootstrap_flight import BootstrapFlight
@@ -44,6 +45,14 @@ class BootstrapGate:
     with self._lock:
       self._generation = ({}, {}, {})
 
+  def restore(self, snapshot: EngineSnapshot) -> None:
+    """Swap in a new generation holding copies of the snapshot's reports and carried runs.
+    Flights start empty, as after :meth:`clear`: a run still in flight finishes into the discarded
+    generation, and copying keeps later runs from writing into the snapshot itself.
+    """
+    with self._lock:
+      self._generation = (dict(snapshot.reports), {}, dict(snapshot.carried))
+
   def run(self, root_package: str, *, discover: Callable[[], ReportMap]) -> ReportMap:
     """Return the cached report for ``root_package``, running ``discover`` if this call must.
     A call that joins a flight already in progress (a re-entry, or a call made during an import)
@@ -77,6 +86,18 @@ class BootstrapGate:
         flight.done.wait()  # holds no gate lock, and no import lock, or it would have boarded
         report = reports.get(root_package)  # still None if the owner failed: go round and claim
     return report
+
+  def snapshot(self) -> tuple[Mapping[str, ReportMap], Mapping[str, tuple[ReportMap, ...]]]:
+    """Return read-only copies of the cached reports and the carried runs, from one generation.
+    Flights are left out: a run in progress belongs to whoever started it, not to a snapshot.
+    """
+    with self._lock:
+      reports, _, carried = self._generation
+      memory: tuple[Mapping[str, ReportMap], Mapping[str, tuple[ReportMap, ...]]] = (
+        MappingProxyType(dict(reports)),
+        MappingProxyType(dict(carried)),
+      )
+    return memory
 
   def _leave(
     self,

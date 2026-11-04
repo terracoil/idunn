@@ -3,8 +3,7 @@
 from typing import Protocol
 
 from idunn import Adapter, Idunn, LifecycleEnum, Port
-
-from _support import Container
+from idunn.testing import Harness
 
 
 @Port
@@ -75,20 +74,20 @@ class LocalLamp(LampPort):
 
 
 def test_describe_shows_environment_selected_adapter_and_singleton_flag() -> None:
-  Container.install(BrassHorn)
-  text = Idunn().describe()
-  assert 'Environment: local' in text
-  assert 'HornPort' in text
-  assert 'selected: ' in text and 'BrassHorn' in text
-  assert 'singleton' in text
+  with Harness.install(BrassHorn):
+    text = Idunn().describe()
+    assert 'Environment: local' in text
+    assert 'HornPort' in text
+    assert 'selected: ' in text and 'BrassHorn' in text
+    assert 'singleton' in text
 
 
 def test_describe_marks_a_keyed_only_port_as_none_selected() -> None:
-  Container.install(BronzeGong)
-  text = Idunn().describe()
-  assert 'GongPort' in text
-  assert 'selected: <none>' in text
-  assert "key='bronze'" in text
+  with Harness.install(BronzeGong):
+    text = Idunn().describe()
+    assert 'GongPort' in text
+    assert 'selected: <none>' in text
+    assert "key='bronze'" in text
 
 
 def test_describe_empty_registry_is_header_only() -> None:
@@ -96,29 +95,29 @@ def test_describe_empty_registry_is_header_only() -> None:
 
 
 def test_describe_renders_concrete_env_label_sorted() -> None:
-  Container.install(RemoteAnvil)
-  text = Idunn().describe()
-  assert 'envs=prod,test' in text
+  with Harness.install(RemoteAnvil):
+    text = Idunn().describe()
+    assert 'envs=prod,test' in text
 
 
 def test_describe_lists_all_adapters_for_a_port_in_order() -> None:
-  Container.install(PlainBell, SilverBell)
-  text = Idunn().describe()
-  assert f'  selected: {PlainBell.__module__}.PlainBell' in text
-  assert f'- {PlainBell.__module__}.PlainBell' in text
-  assert f'- {SilverBell.__module__}.SilverBell' in text
-  assert text.index('.PlainBell key=') < text.index('.SilverBell key=')
+  with Harness.install(PlainBell, SilverBell):
+    text = Idunn().describe()
+    assert f'  selected: {PlainBell.__module__}.PlainBell' in text
+    assert f'- {PlainBell.__module__}.PlainBell' in text
+    assert f'- {SilverBell.__module__}.SilverBell' in text
+    assert text.index('.PlainBell key=') < text.index('.SilverBell key=')
 
 
 def test_describe_sorts_multiple_ports_by_qualified_name() -> None:
   # Install reverse-alphabetically to prove the output is sorted, not registration-ordered.
-  Container.install(PlainBell, RemoteAnvil)
-  text = Idunn().describe()
-  assert text.index('AnvilPort') < text.index('BellPort')
+  with Harness.install(PlainBell, RemoteAnvil):
+    text = Idunn().describe()
+    assert text.index('AnvilPort') < text.index('BellPort')
 
 
 def test_describe_reflects_active_environment_selection() -> None:
-  Container.install(ProdLamp, LocalLamp)
-  text = Idunn().describe()
-  assert f'  selected: {LocalLamp.__module__}.LocalLamp' in text
-  assert f'  selected: {ProdLamp.__module__}.ProdLamp' not in text
+  with Harness.install(ProdLamp, LocalLamp):
+    text = Idunn().describe()
+    assert f'  selected: {LocalLamp.__module__}.LocalLamp' in text
+    assert f'  selected: {ProdLamp.__module__}.ProdLamp' not in text

@@ -4,9 +4,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-Poetry project, in-project `.venv`, with `poetry.lock` committed. `bin/devtool` (a Freyja CLI) wraps
-the same commands and also handles tagging and publishing; `bin/devtool test all|unit|integration`
-runs pytest, where `integration` selects the `integration` marker and `unit` everything else.
+Poetry project, in-project `.venv`, with `poetry.lock` committed. `bin/devtool` (a Freyja CLI, run
+as `poetry run bin/devtool ...`) wraps the same commands and also handles tagging and publishing;
+`bin/devtool test all|unit|integration` runs pytest, where `integration` selects the `integration`
+marker and `unit` everything else, and each exits non-zero when tests fail. `test all` runs the
+suite twice: `poetry run pytest` on the project interpreter, then
+`tmp/venv-3.14/bin/python -m pytest` on the newest installed non-free-threaded pyenv 3.14.x (it
+runs `pyenv install 3.14` if there is none, rebuilds the venv when its interpreter differs, and
+reinstalls the project, `pytest` and the dev group's other `pytest*` plugins when `pyproject.toml`
+changes). That second run is what un-skips the two PEP 649 tests in
+`tests/test_invert_contract.py`. `-k`, `-sv` and `-n` go to both runs, coverage to the poetry run
+only, and each run's verdict is printed separately.
 
 ```bash
 poetry install --with dev
@@ -25,7 +33,8 @@ format check, lint and mypy. `test` runs pytest on Python 3.11, 3.12, 3.13.16 an
 (`python_version = "3.11"`) and Ruff (`target-version = "py311"`) target the floor, so 3.12+-only
 syntax and APIs are rejected. Keep the classifiers and the CI matrix in step with the floor, and
 re-lock (`poetry lock`) after any dependency edit, or the quality job fails. Pytest, Ruff and mypy
-caches live under the git-ignored `tmp/`.
+caches live under the git-ignored `tmp/`, and so does `tmp/venv-3.14`, which is how the suite runs
+on 3.14 locally (`bin/devtool test all`); a `tmp/venv-3.11` built the same way covers the floor.
 
 ## Architecture
 
@@ -36,21 +45,26 @@ Idunn is a constructor-time IoC toolkit: **Port → Adapter → `@Invert` consum
 
 | Layer | Holds | May import |
 |-------|-------|------------|
-| `idunn/app/` | `Port` (`port.py`), `Adapter` (`adapter.py`), `Invert` (`invert.py`), `Idunn` facade (`idunn.py`) | anything |
+| `idunn/app/` | `Port` (`port.py`), `Adapter` (`adapter.py`), `Invert` (`invert.py`), `Idunn` facade (`idunn.py`), `Harness` (`harness.py`) | anything but `testing` |
 | `idunn/internal/` | `InversionMapper`, `InversionResolver`, `InversionValidator`, `ConstructionStack`, `ConstructorPlanner`, `LazyPlan`, `AutoDiscovery`, `BootstrapGate`, `BootstrapFlight`, `ReportMerger`, `DecoratorSupport`, `PortRegistry` | domain, util |
-| `idunn/domain/` | frozen dataclasses (`AdapterDeclaration`, `AdapterMetadata`, `Catalog`, `FunctionShape`, `InvertDeclaration`, `ParameterPlan`, `PortBinding`), `LifecycleEnum`, `ReportMap` TypedDict, the `IdunnError` hierarchy | util |
+| `idunn/domain/` | frozen dataclasses (`AdapterDeclaration`, `AdapterMetadata`, `Catalog`, `EngineSnapshot`, `FunctionShape`, `InvertDeclaration`, `ParameterPlan`, `PortBinding`), `LifecycleEnum`, `ReportMap` TypedDict, the `IdunnError` hierarchy | util |
 | `idunn/util/` | `Environment`, `ImportContext`, `KeyedLocks`, `MetaSingleton`, `QualifiedName` | nothing internal |
+| `idunn/testing/` | `__init__.py` only: re-exports `Harness` from `app` | app |
 
 No modules may live at `idunn/` root besides `__init__.py`. Cross-package imports go through each
 layer's `__init__.py` re-exports (e.g. `from idunn.domain import ...`), never module paths.
+`testing` is a public barrel, not a layer of its own: no layer lists it in `ALLOWED`, so production
+code (Idunn's own included) never imports `idunn.testing`, and `test_testing_holds_only_its_barrel`
+keeps the implementation in `app/harness.py`, beside the facade hooks it uses.
 `InversionValidator`, `ConstructionStack`, `BootstrapFlight` and `ReportMerger` are intentionally
 *not* re-exported from `idunn.internal`: only their siblings use them.
 
 ### Public surface
 
 `idunn/__init__.py` exports exactly: the three decorators, `Idunn`, `LifecycleEnum`, the `ReportMap`
-TypedDict returned by discovery, and the seven `IdunnError` classes. `tests/test_public_surface.py`
-pins this set, so changing it means changing that test. The engine classes are never public.
+TypedDict returned by discovery, and the seven `IdunnError` classes. `idunn/testing/__init__.py`
+exports exactly `Harness`, and the root does not re-export it. `tests/test_public_surface.py` pins
+both sets, so changing either means changing that test. The engine classes are never public.
 
 ### Key invariants
 
@@ -75,8 +89,25 @@ pins this set, so changing it means changing that test. The engine classes are n
   the public `typing.is_protocol` is 3.13+ and the floor is 3.11.
 - **There is no public `resolve()` or `register()`.** `@Invert` reaches the engine through one
   private door, `Idunn()._inject(parameter)`, which takes a `ParameterPlan` and leaves tolerance to
-  the resolver; tests reach it through `Resolve.port` in `tests/_support.py`. This removal is
-  deliberate (`docs/ADVANCED.md`); do not add one.
+  the resolver; tests reach it through `Resolve.port` in `tests/_support.py`. Registration outside
+  discovery is `idunn.testing.Harness.install` alone, and it is scoped (U9): one `with` block or one
+  decorated call, undone on exit. This is deliberate (`docs/ADVANCED.md`); do not add a public
+  `resolve`, or a register that outlives its block.
+- **`Harness` blocks restore an `EngineSnapshot` on exit, error or not.** `install(*adapters)` is
+  one `register_batch`; `override(port, instance, *, key=None)` checks the port (`InvalidPortError`)
+  and the instance (`InvalidAdapterError`) up front, then answers that `(port, key)` ahead of
+  selection in every environment, with no adapter needed, a caller-supplied argument still winning.
+  Each block calls `Idunn()._snapshot()` on entry and `_restore()` on exit through the private hooks
+  `_snapshot`, `_restore`, `_install` and `_override`; the snapshot holds the environment, the
+  catalog and overrides by reference (both immutable), and read-only copies of the singletons and
+  bootstrap's reports and carried runs. Restores install fresh copies as whole new generations
+  (`(dict(instances), KeyedLocks())`, new gate maps), exactly as `clear()` swaps, so a build racing
+  a restore lands in the discarded one and no later write reaches a snapshot an outer block still
+  needs. The resolver puts the overrides back before the generation: a resolve captures its
+  generation once but reads overrides live, so the other order lets one starting mid-restore build
+  a singleton against the departing fake into the restored generation. Blocks nest LIFO. Plans
+  survive a restore (they depend only on the class). The harness is process-wide: fine under
+  xdist, not for thread-concurrent tests in one process.
 - **`Idunn().bootstrap(root)` is `autodiscover` run once per root through `BootstrapGate`** (cache
   keyed by root only, so repeat calls ignore their options; failures are not cached). Libraries
   call it from their entry points instead of at import. Two rules keep it deadlock-free: no Idunn
@@ -160,17 +191,20 @@ parameter through `_inject` and so recursively through `_resolve`. Planning an a
 `MissingTypeHintError` for any named parameter without a default that is not a port (annotated or
 not), and `TypeError` for a positional-only port, since the resolver passes keywords; `*args` and
 `**kwargs` are skipped, and a constructor with no code object (`object.__init__`) has nothing to
-inject. Re-entry into an adapter already on the construction stack raises `InjectionCycleError`.
-`TRANSIENT` (the default) rebuilds every time. A `SINGLETON` is cached per adapter class in the
-captured generation; on a miss, `_build_once` runs the cycle walk, then builds under the adapter's
-lock. The walk is a depth-first dry run from the adapter (its path starts with the current stack,
-so its message names the same `a -> b -> a` path) over the cached plans, following exactly the
-build's selections: a tolerant parameter with nothing active has no edge, a singleton already
-built is a leaf, and a required parameter with no adapter halts the walk, because the build raises
-`AdapterNotFoundError` there and never reaches anything beyond it. A `done` set keeps it linear per
-miss. The construction-time stack check stays: it is what catches loops among `TRANSIENT`s.
-`inject` seeds its stack from the thread's `ConstructionStack`, which a singleton build publishes
-around itself, so a consumer built mid-build extends the path rather than starting a new one.
+inject. Re-entry into an adapter already on the construction stack raises `InjectionCycleError`. An
+override is checked first in `_resolve`, right after the `is_port` guard (`_overrides` is `None`
+outside a `Harness` block, so the warm path pays one identity test), and by `_inject`'s tolerance
+check. `TRANSIENT` (the default) rebuilds every time. A `SINGLETON` is cached per adapter class in
+the captured generation; on a miss, `_build_once` runs the cycle walk, then builds under the
+adapter's lock. The walk is a depth-first dry run from the adapter (its path starts with the
+current stack, so its message names the same `a -> b -> a` path) over the cached plans, following
+exactly the build's selections: an overridden `(port, key)` and a tolerant parameter with nothing
+active have no edge, a singleton already built is a leaf, and a required parameter with no adapter
+halts the walk, because the build raises `AdapterNotFoundError` there and never reaches anything
+beyond it. A `done` set keeps it linear per miss. The construction-time stack check stays: it is
+what catches loops among `TRANSIENT`s. `inject` seeds its stack from the thread's
+`ConstructionStack`, which a singleton build publishes around itself, so a consumer built mid-build
+extends the path rather than starting a new one.
 
 The index is a frozen `Catalog` (domain) that the mapper replaces whole. Readers (`find`, `select`,
 `bindings`, `ports`) read `self._catalog` once and never lock, so `describe()` comes from one
@@ -218,21 +252,26 @@ newly registered by that call.
 
 - `tests/conftest.py` has an autouse fixture that calls `Idunn().reset(environment='local')` before
   and after every test; rely on it rather than resetting by hand.
-- Because the facade has no register/resolve, engine tests use the seams in `tests/_support.py`:
-  `Wiring` (a standalone mapper + resolver) for resolution tests, `Container.install(...)` to push
-  adapters into the singleton, as one batch, for `@Invert` integration tests, and `Resolve.port`
-  to build one port through the facade's private door as a required `ParameterPlan`.
+- `@Invert` integration tests install adapters with `idunn.testing.Harness`, exactly as users do:
+  `with Harness.install(...):` (one batch, undone on exit), and `Harness.override(...)` for fakes.
+  Because the facade has no register/resolve, engine tests use the seams in `tests/_support.py`:
+  `Wiring` (a standalone mapper + resolver) for resolution tests, `Resolve.port` to build one port
+  through the facade's private door as a required `ParameterPlan`, `PackageWriter` for throwaway
+  packages, and `Racer`.
 - Thread tests start their targets through `Racer` (`_support.py`): daemon threads behind one
   barrier, with a thread still alive after the timeout recorded as a `TimeoutError`, so a deadlock
   fails the test instead of hanging the suite. The `eager_switching` fixture in `conftest.py` sets
   `sys.setswitchinterval(1e-6)` for races that the GIL would otherwise hide. Run concurrency tests
-  repeatedly (ten times per interpreter) before calling them green.
+  repeatedly (ten times per interpreter, 3.14 through `tmp/venv-3.14/bin/python -m pytest`) before
+  calling them green. ADVANCED, "Maintainer notes", documents all of this for humans.
 - Tests and `examples/` are type-checked under strict mypy; keep them fully annotated.
-- Tests import public names from `idunn` exactly as users do, and so do the generated-module source
-  strings that tests write to `tmp_path`. Non-public names come from the highest re-exporting layer
-  package (`idunn.domain`, `idunn.internal`, `idunn.util`), never from a module path.
-  `tests/test_public_surface.py` enforces this in `tests/` and `examples/` for `from idunn...
-  import` statements and for plain `import idunn.x.y` module paths (`import idunn.internal`, a
+- Tests import public names from their home barrel exactly as users do (`idunn`, or `idunn.testing`
+  for `Harness`), and so do the generated-module source strings that tests write to `tmp_path`.
+  Non-public names come from the highest re-exporting layer package (`idunn.domain`,
+  `idunn.internal`, `idunn.util`), never from a module path. `tests/test_public_surface.py`
+  enforces this in `tests/` and `examples/` for `from idunn... import` statements (a public name
+  from any barrel but its home, `from idunn.app import Harness` included, is flagged) and for plain
+  `import idunn.x.y` module paths (`import idunn.internal`, a
   layer package, is fine). The import strings in `test_architecture.py` are `LayerProbe` fixtures
   and are exempt.
 

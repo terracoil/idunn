@@ -10,9 +10,10 @@
 
   STEP 1 — SCAN. Enumerate every class / Protocol / @dataclass / Enum / TypedDict /
     exception defined under idunn/ (all four layers: app/, domain/, internal/,
-    util/) and under examples/. A quick sweep:
+    util/, plus the testing/ barrel) and under examples/. A quick sweep:
         grep -rn '^class \|^  class \|^    class ' idunn/ examples/
-    Then read idunn/__init__.py (its __all__) to see what is actually exported.
+    Then read idunn/__init__.py and idunn/testing/__init__.py (their __all__) to
+    see what is actually exported; both barrels count as Public.
     Every class the sweep finds gets a row; util/ helpers are easy to miss.
 
   STEP 2 — CLASSIFY each class on two axes, using plain words (no emoji):
@@ -28,8 +29,8 @@
                  Active  — validates / resolves / scans / constructs / orchestrates.
 
   STEP 3 — GROUP into the sections below, keeping layer order app → domain →
-    internal → util: Public API surface · Decorators · Definitions & metadata ·
-    Exceptions · Engine & orchestration · Examples. Add or drop a section only if
+    internal → util: Public API surface · Decorators · Testing · Definitions &
+    metadata · Exceptions · Engine & orchestration · Examples. Add or drop a section only if
     a whole area appears or disappears in the code.
 
   STEP 4 — COLUMNS per table: Class | Nature | Purpose | Audience | Splittable? |
@@ -58,8 +59,8 @@
     update is just as cheap.
 
   SOURCES OF TRUTH to verify against:
-    idunn/__init__.py · idunn/app/port.py · idunn/app/adapter.py · idunn/app/invert.py ·
-    idunn/app/idunn.py ·
+    idunn/__init__.py · idunn/testing/__init__.py · idunn/app/port.py ·
+    idunn/app/adapter.py · idunn/app/invert.py · idunn/app/idunn.py · idunn/app/harness.py ·
     idunn/domain/* · idunn/internal/* · idunn/util/* · examples/my_app/*
 ═══════════════════════════════════════════════════════════════════════════════
 -->
@@ -68,7 +69,8 @@
 
 A map of every class defined in the live `idunn/` package and the runnable `examples/`. Use it to
 tell at a glance what is part of the public contract, what is plumbing, and what could be tightened.
-The package is split into four layers, `app/`, `domain/`, `internal/` and `util/`, and the import
+The package is split into four layers, `app/`, `domain/`, `internal/` and `util/`, plus a
+`testing/` package that only re-exports `Harness` and that no layer may import. The import
 directions between them are enforced by `tests/test_architecture.py`, so the map and the territory
 are at least required to agree on the borders.
 
@@ -105,14 +107,16 @@ are at least required to agree on the borders.
 
 `__init__.py` is the barrel that re-exports the public names in its `__all__`: the three decorators
 (`Port`, `Adapter`, `Invert`), the `Idunn` facade, `LifecycleEnum`, the `ReportMap` TypedDict, and
-the full `IdunnError` hierarchy. It contains no logic of its own (Public, Passive). Everything else
-stays home: from `domain/`, the `AdapterDeclaration`, `AdapterMetadata`, `Catalog`,
-`FunctionShape`, `InvertDeclaration`, `ParameterPlan` and `PortBinding` types; all of `internal/`
-(`InversionMapper`, `InversionResolver`, `InversionValidator`, `ConstructionStack`,
-`ConstructorPlanner`, `LazyPlan`, `AutoDiscovery`, `BootstrapGate`, `BootstrapFlight`,
-`ReportMerger`, `DecoratorSupport`, `PortRegistry`); and all of `util/` (`Environment`,
-`ImportContext`, `KeyedLocks`, `MetaSingleton`, `QualifiedName`). What users never import, nobody
-has to keep compatible.
+the full `IdunnError` hierarchy. It contains no logic of its own (Public, Passive). Its sibling
+barrel, `idunn/testing/__init__.py`, exports one name, `Harness`, for tests only; the root does not
+re-export it, so `from idunn import *` never drags test tooling into an application. Everything
+else stays home: from `domain/`, the `AdapterDeclaration`, `AdapterMetadata`, `Catalog`,
+`EngineSnapshot`, `FunctionShape`, `InvertDeclaration`, `ParameterPlan` and `PortBinding` types;
+all of `internal/` (`InversionMapper`, `InversionResolver`, `InversionValidator`,
+`ConstructionStack`, `ConstructorPlanner`, `LazyPlan`, `AutoDiscovery`, `BootstrapGate`,
+`BootstrapFlight`, `ReportMerger`, `DecoratorSupport`, `PortRegistry`); and all of `util/`
+(`Environment`, `ImportContext`, `KeyedLocks`, `MetaSingleton`, `QualifiedName`). What users never
+import, nobody has to keep compatible.
 
 ---
 
@@ -130,6 +134,16 @@ has to keep compatible.
 
 ![Idunn](https://github.com/terracoil/idunn/raw/master/docs/images/idunn-apple-square-50.png)
 
+## Testing: `app/harness.py`, published as `idunn.testing`
+
+| Class / Symbol | Nature | Purpose | Audience | Splittable? | Generic utility? |
+|----------------|--------|---------|----------|-------------|------------------|
+| `Harness` (`harness.py`) | Active | Scoped test wiring, imported as `from idunn.testing import Harness`. `install(*adapters)` registers adapters as one atomic batch (a collision raises `InvalidAdapterError` before the block runs, with nothing registered); `override(port, instance, *, key=None)` makes a `(port, key)` resolve to `instance` ahead of selection, in any environment and with no adapter registered, after checking the port (`InvalidPortError`) and the instance (`InvalidAdapterError`). Both are `@contextmanager` static methods, so they also decorate functions and re-enter per call. Each block takes an `EngineSnapshot` on entry and restores it on exit, error or not, so blocks nest and unwind last in, first out. Process-wide, like the container it borrows. | Public | — | — |
+
+---
+
+![Idunn](https://github.com/terracoil/idunn/raw/master/docs/images/idunn-apple-square-50.png)
+
 ## Definitions and metadata: `domain/`
 
 | File | Class | Nature | Purpose | Audience | Splittable? | Generic utility? |
@@ -139,6 +153,7 @@ has to keep compatible.
 | `adapter_declaration.py` | `AdapterDeclaration` | Passive | Frozen carrier of the options captured by `@Adapter` (`port`/`key`/`lifecycle`/`envs`), made before the decorator has even seen its class; the only consumer is `InversionMapper` at registration time. | Hidden | — | — |
 | `adapter_metadata.py` | `AdapterMetadata` | Passive (with helpers) | Frozen record of one *registered* adapter, plus `is_available_in()` and `environment_label()`. No arrival order: validation never lets two adapters compete for one slot in one environment, and the catalog's insertion order already remembers who came first. Indexed by `Catalog` and carried inside `PortBinding`. | Hidden | — | — |
 | `catalog.py` | `Catalog` | Passive (with helpers) | Frozen, copy-on-write snapshot of every registration: `ports`, `adapters` (insertion order is registration order) and `slots`, a read-only `(port, key)` → adapters index (`SlotKey` is its alias). `find()` filters one slot by environment; `empty()` and `freeze()` build one. `InversionMapper` swaps in a whole new catalog per batch, so readers never lock and never see half a batch. | Hidden | — | Minor: the copy-on-write snapshot pattern. |
+| `engine_snapshot.py` | `EngineSnapshot` | Passive | Frozen picture of everything a `Harness` block can change: `environment`, `catalog` (immutable, kept by reference), `instances` (built singletons), `overrides`, and bootstrap's `reports` and `carried` runs. The mutable parts are copied on the way in, held behind read-only proxies, and copied again on the way out, so neither the next build nor an inner block can write into a snapshot an outer block still needs. Made by `Idunn()._snapshot()`, put back by `_restore()`. | Hidden | — | — |
 | `function_shape.py` | `FunctionShape` | Passive (with helpers) | Frozen parameter layout read from `__code__`, `__defaults__` and `__kwdefaults__` only: positional (and positional-only) names, keyword-only names, `*args`, defaults, and `constructor` (the function's own name is `__init__`). `caller_positional`, `named` and `positional_limit` are what the shape rules and the wrapper need. Never evaluates an annotation, so it works on 3.14 with an unresolved forward reference, where `inspect.signature` raises. `of()` returns `None` for anything without a code object. | Hidden | — | Minor: a signature reader that never evaluates hints. |
 | `invert_declaration.py` | `InvertDeclaration` | Passive (with helpers) | Frozen `ports` map and `keys` handed to one `@Invert(...)`, behind read-only proxies (`frozen()`); `attach()` stamps it on the wrapper as `__idunn_invert__` and `of()` reads it back. The resolver reads it to honour an adapter constructor's own keys and map, and `@Invert` reads it to refuse stacking. Says nothing about the function's shape, since one `Invert(...)` may decorate several functions. | Hidden | — | — |
 | `parameter_plan.py` | `ParameterPlan` | Passive (with helpers) | One injectable port parameter: `name`, `port`, `key`, `optional` and `default` (`Parameter.empty` when there is none), plus `tolerant` and `fallback`. The unit the planner produces, the resolver caches per adapter, and `Idunn()._inject` takes. | Hidden | — | — |
@@ -156,8 +171,8 @@ covers the family.
 | Class | Raised when |
 |-------|-------------|
 | `IdunnError` | Base for every Idunn error. |
-| `InvalidPortError` | `@Port` is applied to anything but a Protocol (`Port(5)` included), an adapter names an unmarked port, an `@Invert` map value is not a port, a parameter is both port-annotated and mapped, `keys` names a parameter that is not a port, or a non-port is resolved. |
-| `InvalidAdapterError` | `@Adapter` is applied to a non-class or twice to one class, two adapters share a port and key in overlapping environments (the batch that hits it registers nothing), or a built instance does not satisfy its port. |
+| `InvalidPortError` | `@Port` is applied to anything but a Protocol (`Port(5)` included), an adapter names an unmarked port, an `@Invert` map value is not a port, a parameter is both port-annotated and mapped, `keys` names a parameter that is not a port, a non-port is resolved, or `Harness.override` is handed a non-port. |
+| `InvalidAdapterError` | `@Adapter` is applied to a non-class or twice to one class, two adapters share a port and key in overlapping environments (the batch that hits it, discovery's or `Harness.install`'s, registers nothing), or a built instance or a `Harness.override` stand-in does not satisfy its port. |
 | `AdapterNotFoundError` | No active adapter is registered for a requested port and the parameter is not optional. |
 | `DiscoveryError` | A module below the discovery root fails to import and `strict=True`, or, whatever `strict` says, the root has a `__path__` entry that is not a directory (a zip). The root's own import errors propagate unwrapped. |
 | `MissingTypeHintError` | An adapter constructor parameter without a default has no annotation, or one that is not a port. |
@@ -171,15 +186,15 @@ covers the family.
 
 | File | Class | Nature | Purpose | Audience | Splittable? | Generic utility? |
 |------|-------|--------|---------|----------|-------------|------------------|
-| `app/idunn.py` | `Idunn` | Active | Thin **facade** and process-wide singleton (`metaclass=MetaSingleton`); `Idunn()` takes no arguments, so the environment is chosen by `IDUNN_ENV` or `reset(environment=...)`. Public surface is `autodiscover()`, `bootstrap()` (a once-per-root `autodiscover` for library entry points, delegated to `BootstrapGate`), `reset()`, `describe()` and the read-only `environment` property; owns one `InversionMapper`, one `InversionResolver` and one `BootstrapGate` and delegates. `@Invert` reaches resolution through one private door, `_inject(parameter)`, which takes a `ParameterPlan` and lets the resolver decide tolerance. No public `resolve`/`register_*`, by design. | Public | — | — |
-| `internal/inversion_mapper.py` | `InversionMapper` | Active | Owns the `Catalog`. Writes go through `register_batch` (ports, then adapters) under one write lock: copy once, skip what is already registered, validate each new adapter against its slot, swap once, so a batch lands whole or not at all; `register_port`/`register_adapter` are batches of one. Reads (`find`, `select`, `bindings`, and the `catalog`/`ports` properties the tests use) take one snapshot and never lock, and `bindings()` emits the `PortBinding`s behind `describe()`. | Hidden | — | — |
+| `app/idunn.py` | `Idunn` | Active | Thin **facade** and process-wide singleton (`metaclass=MetaSingleton`); `Idunn()` takes no arguments, so the environment is chosen by `IDUNN_ENV` or `reset(environment=...)`. Public surface is `autodiscover()`, `bootstrap()` (a once-per-root `autodiscover` for library entry points, delegated to `BootstrapGate`), `reset()`, `describe()` and the read-only `environment` property; owns one `InversionMapper`, one `InversionResolver` and one `BootstrapGate` and delegates. `@Invert` reaches resolution through one private door, `_inject(parameter)`, which takes a `ParameterPlan` and lets the resolver decide tolerance. `Harness` uses four more private hooks: `_snapshot()` and `_restore(snapshot)` (an `EngineSnapshot` across the mapper, resolver, gate and environment) and `_install(adapters)` and `_override(port, instance, key=...)`. No public `resolve`/`register_*`, by design. | Public | — | — |
+| `internal/inversion_mapper.py` | `InversionMapper` | Active | Owns the `Catalog`. Writes go through `register_batch` (ports, then adapters) under one write lock: copy once, skip what is already registered, validate each new adapter against its slot, swap once, so a batch lands whole or not at all; `register_port`/`register_adapter` are batches of one. Reads (`find`, `select`, `bindings`, and the `catalog`/`ports` properties the tests use) take one snapshot and never lock, and `bindings()` emits the `PortBinding`s behind `describe()`. `restore(catalog)` swaps back a catalog read earlier, for `Harness`. | Hidden | — | — |
 | `internal/construction_stack.py` | `ConstructionStack` | Active (thread-local) | A `threading.local` holding `current`, the construction stack of the `SINGLETON` build running on this thread (class-level default `()`, so a thread that never published reads a plain attribute). `publishing(stack)` is a context manager that sets it for the build and restores the outer value, error or not. `inject` seeds from it, which makes a consumer built inside a constructor an ordinary edge for the cycle walk and the stack check; a worker thread a constructor starts begins empty. Published around singleton builds only, for speed. Not re-exported from `idunn.internal`. | Hidden | — | — |
-| `internal/inversion_resolver.py` | `InversionResolver` | Active | The construction engine: recursive, plan-driven resolution, the in-progress cycle stack, the `SINGLETON` instance cache and a per-adapter-class plan cache (`_plans`, filled on first build by `ConstructorPlanner.plan_adapter`, dropped by `clear()`). `inject(parameter=...)` is the facade's door; adapter parameters go through the same private `_inject`, so a tolerant parameter with no active adapter gets its fallback in both places. Asks `InversionMapper` for selections; an adapter constructor's own `@Invert` keys and map are honoured, undecorated ones resolve unkeyed. Each `SINGLETON` is built once: the warm path is a lock-free lookup, and a miss runs a dry cycle walk (no construction, no lock; it follows the build's selections and raises `InjectionCycleError` for a loop) before building under the adapter's own lock from `KeyedLocks` and checking the cache again inside it. Its generation, `(instances, locks)`, is read once per `inject` and swapped whole by `clear()`, so a build racing `reset()` lands in the discarded one. A singleton build publishes its stack in a `ConstructionStack`, and `inject` starts from it, so an `@Invert()` consumer created inside the constructor continues the path and a loop through it raises `InjectionCycleError` (U16). | Hidden | — | — |
+| `internal/inversion_resolver.py` | `InversionResolver` | Active | The construction engine: recursive, plan-driven resolution, the in-progress cycle stack, the `SINGLETON` instance cache and a per-adapter-class plan cache (`_plans`, filled on first build by `ConstructorPlanner.plan_adapter`, dropped by `clear()`). `inject(parameter=...)` is the facade's door; adapter parameters go through the same private `_inject`, so a tolerant parameter with no active adapter gets its fallback in both places. Asks `InversionMapper` for selections; an adapter constructor's own `@Invert` keys and map are honoured, undecorated ones resolve unkeyed. Each `SINGLETON` is built once: the warm path is a lock-free lookup, and a miss runs a dry cycle walk (no construction, no lock; it follows the build's selections and raises `InjectionCycleError` for a loop) before building under the adapter's own lock from `KeyedLocks` and checking the cache again inside it. Its generation, `(instances, locks)`, is read once per `inject` and swapped whole by `clear()`, so a build racing `reset()` lands in the discarded one. A singleton build publishes its stack in a `ConstructionStack`, and `inject` starts from it, so an `@Invert()` consumer created inside the constructor continues the path and a loop through it raises `InjectionCycleError` (U16). Overrides (`override()`, for `Harness`) are a copy-on-write `(port, key)` mapping consulted ahead of selection, by the tolerance check too, and are leaves for the cycle walk; outside a `Harness` block there is no mapping at all (`None`), so the hot path pays one identity test. `snapshot()` returns a read-only copy of the singletons plus the overrides; `restore()` puts the overrides back first (a resolve reads them live but captures its generation once), then installs a copy as a whole new generation with fresh locks, so a build racing it lands in the discarded one, as with `clear()`, which also drops overrides. | Hidden | — | — |
 | `internal/constructor_planner.py` | `ConstructorPlanner` | Active (stateless) | The one rulebook for which parameters get injected. `check_shape()` applies the shape rules from the code object at decoration (every mapped or keyed name is a parameter and keyword-only; `TypeError`); `plan()` applies the annotation rules from the type hints (no map entry on a port-annotated parameter, `keys` on ports only; `InvalidPortError`) and builds the `ParameterPlan`s; `plan_adapter()` does the same for an adapter constructor and also refuses non-port parameters without defaults (`MissingTypeHintError`) and positional-only ports (`TypeError`). `KEYWORD_ONLY_PORTS` (on) is where the rule that port-annotated parameters of an `@Invert` function be keyword-only lives; it is not a toggle, since both wrappers read ports from `kwargs` alone. Undecorated adapter constructors are exempt. | Hidden | — | — |
 | `internal/lazy_plan.py` | `LazyPlan` | Active | One `@Invert` function's plan, kept in the wrapper's closure: `try_now()` plans at decoration and swallows only `NameError` (a forward reference), `get()` plans on first call if needed and never caches a failure, `ready` says which happened. | Hidden | — | — |
 | `internal/inversion_validator.py` | `InversionValidator` | Active (stateless) | Stateless checks: adapter-class validity (a backstop for declarations attached without `@Adapter`), duplicates within one `(port, key)` slot in overlapping envs (checked against that slot only, so validation stays linear), and instance-satisfies-port. Called by the mapper and resolver; raises `IdunnError`s. Not re-exported from `idunn.internal`. | Hidden | — | — |
 | `internal/auto_discovery.py` | `AutoDiscovery` | Active | Imports every module under a dotted root name (skipping `__main__`, non-identifier parts, test modules and `exclude` patterns; the running `__main__` is reused), then registers the decorated classes into an `InversionMapper` as one all-or-nothing batch, ports first, and returns a `ReportMap`. A root whose `__path__` is not a directory (a zip) raises `DiscoveryError` whatever `strict` says; root import errors are not wrapped. Reached via `Idunn().autodiscover`. | Hidden | — | Yes: the module-scan helpers (`_module_names`, `_path_entries`, `_relative_parts`, `_is_excluded`, `_load`) are a reusable "find and import dotted modules under a package" utility. |
-| `internal/bootstrap_gate.py` | `BootstrapGate` | Active (process-wide state) | Runs `bootstrap`'s discovery once per root and caches the report. Its `Lock` guards bookkeeping only, never an import. Entry-point callers that find a flight in progress wait on its `Event` and share one report; a thread that already has a run aboard (re-entry) and any thread with an import on its stack (`ImportContext`) join the flight and discover themselves instead, so nobody waits while possibly holding an import lock, or on itself. The last run out caches the `ReportMerger` merge; if the owner failed it caches nothing and carries the successful runs' reports into the retry's flight instead. `clear()` swaps the reports, flights and carried runs as one tuple, and each run captures it once at entry. Reached via `Idunn().bootstrap` and `reset()`. | Hidden | — | Minor: a once-per-key, import-safe guard, but the merge ties it to `ReportMap`. |
+| `internal/bootstrap_gate.py` | `BootstrapGate` | Active (process-wide state) | Runs `bootstrap`'s discovery once per root and caches the report. Its `Lock` guards bookkeeping only, never an import. Entry-point callers that find a flight in progress wait on its `Event` and share one report; a thread that already has a run aboard (re-entry) and any thread with an import on its stack (`ImportContext`) join the flight and discover themselves instead, so nobody waits while possibly holding an import lock, or on itself. The last run out caches the `ReportMerger` merge; if the owner failed it caches nothing and carries the successful runs' reports into the retry's flight instead. `clear()` swaps the reports, flights and carried runs as one tuple, and each run captures it once at entry; `restore()` swaps in copies of a snapshot's reports and carried runs the same way, with no flights, and `snapshot()` hands out read-only copies of both. Reached via `Idunn().bootstrap`, `reset()` and `Harness`. | Hidden | — | Minor: a once-per-key, import-safe guard, but the merge ties it to `ReportMap`. |
 | `internal/bootstrap_flight.py` | `BootstrapFlight` | Passive (frozen record) | One root's first bootstrap while runs are still in progress: `runners` (one thread ident per run in progress, so nested re-entries repeat and `aboard_here()` asks "does this thread have a run in flight?"), the `done` event, finished reports (starting from any a failed flight carried) and a failed flag. Replaced copy-on-write under the gate's lock. Not re-exported from `idunn.internal`. | Hidden | — | — |
 | `internal/report_merger.py` | `ReportMerger` | Active (stateless) | Merges the runs of one root's first bootstrap: sorted union of `imported_modules`, `skipped_modules` minus anything another run imported, `registered_*` concatenated in run-finish order (exact, because each class is new for exactly one atomic batch). Not re-exported from `idunn.internal`. | Hidden | — | — |
 | `internal/decorator_support.py` | `DecoratorSupport` | Active | Helpers shared by the decorators and the planner: `normalize_envs()` (collapse `envs` into a normalized `frozenset`, or `None`) and `port_from_annotation()` (resolve an annotation to `(port, optional)`, unwrapping `Port \| None`). | Hidden | — | Minor: tied to Idunn rules. |
@@ -215,8 +230,9 @@ is the README's `my_app` layout as a **discoverable package**, run from the repo
 ## Reading the catalog
 
 - **The public surface is tight.** Top-level `idunn` exports only the three decorators, `Idunn`,
-  `LifecycleEnum`, the `ReportMap` TypedDict, and the exception hierarchy. Nothing is Mixed: the
-  engine-facing domain types (`AdapterDeclaration`, `AdapterMetadata`, `Catalog`, `FunctionShape`,
+  `LifecycleEnum`, the `ReportMap` TypedDict, and the exception hierarchy; `idunn.testing` exports
+  `Harness` and nothing else. Nothing is Mixed: the engine-facing domain types
+  (`AdapterDeclaration`, `AdapterMetadata`, `Catalog`, `EngineSnapshot`, `FunctionShape`,
   `InvertDeclaration`, `ParameterPlan`, `PortBinding`) never reach users, because the facade
   returns strings and reports rather than engine types. (The `InvertDeclaration` stamped on every
   `@Invert` wrapper as `__idunn_invert__` is reachable, but it is plumbing, not an API.)

@@ -1,4 +1,7 @@
-"""Architecture tests: the four layers import downhill only, and nothing loiters at the root."""
+"""Architecture tests: the four layers import downhill only, and nothing loiters at the root.
+``testing`` sits on top as a fifth package that may import ``app`` and nothing else, and that no
+layer may import, so production code cannot lean on test tooling even by accident.
+"""
 
 from __future__ import annotations
 
@@ -6,11 +9,12 @@ import ast
 from pathlib import Path
 
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent / 'idunn'
-LAYERS = ('app', 'domain', 'internal', 'util')
+LAYERS = ('app', 'domain', 'internal', 'testing', 'util')
 ALLOWED = {
   'app': {'app', 'domain', 'internal', 'util'},
   'domain': {'domain', 'util'},
   'internal': {'internal', 'domain', 'util'},
+  'testing': {'testing', 'app'},
   'util': {'util'},
 }
 
@@ -60,7 +64,7 @@ class LayerProbe:
     return parts[1] if parts[0] == 'idunn' and len(parts) >= 2 and parts[1] in LAYERS else None
 
 
-def test_no_modules_outside_the_four_layers() -> None:
+def test_no_modules_outside_the_known_packages() -> None:
   stray: list[str] = []
   for path in PACKAGE_ROOT.rglob('*.py'):
     parts = path.relative_to(PACKAGE_ROOT).parts
@@ -69,7 +73,20 @@ def test_no_modules_outside_the_four_layers() -> None:
         stray.append(str(path.relative_to(PACKAGE_ROOT)))
     elif parts[0] not in LAYERS:
       stray.append(str(path.relative_to(PACKAGE_ROOT)))
-  assert not stray, f'Modules outside app/domain/internal/util: {stray}'
+  assert not stray, f'Modules outside app/domain/internal/testing/util: {stray}'
+
+
+def test_testing_holds_only_its_barrel() -> None:
+  # The implementation lives in app beside the facade it drives; this package only re-exports it.
+  modules = sorted(path.relative_to(PACKAGE_ROOT).as_posix() for path in PACKAGE_ROOT.rglob('*.py'))
+  assert [module for module in modules if module.startswith('testing/')] == ['testing/__init__.py']
+
+
+def test_no_layer_may_import_testing() -> None:
+  assert all('testing' not in ALLOWED[layer] for layer in LAYERS if layer != 'testing')
+  node = ast.parse('from idunn.testing import Harness').body[0]
+  targets = LayerProbe._import_targets(node, ['idunn', 'app'])
+  assert LayerProbe._layer_of_dotted(targets[0]) == 'testing'
 
 
 def test_layer_dependencies_respect_allowed_matrix() -> None:

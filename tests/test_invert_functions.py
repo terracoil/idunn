@@ -19,8 +19,7 @@ from idunn import (
   Port,
 )
 from idunn.domain import InvertDeclaration
-
-from _support import Container
+from idunn.testing import Harness
 
 
 @Port
@@ -113,19 +112,18 @@ class Till:
 
 
 def test_a_function_receives_its_ports_as_keyword_arguments() -> None:
-  Container.install(GoldenBasket)
-
-  assert pick() == 'golden'
+  with Harness.install(GoldenBasket):
+    assert pick() == 'golden'
 
 
 def test_a_function_assigns_nothing_anywhere() -> None:
-  Container.install(GoldenBasket)
-  till = Till()
+  with Harness.install(GoldenBasket):
+    till = Till()
 
-  assert till.ring(3) == 'golden x3'
-  assert 'basket' not in vars(till)
-  assert 'basket' not in vars(pick)
-  assert 'basket' not in vars(Till.ring)
+    assert till.ring(3) == 'golden x3'
+    assert 'basket' not in vars(till)
+    assert 'basket' not in vars(pick)
+    assert 'basket' not in vars(Till.ring)
 
 
 def test_a_caller_supplied_argument_wins_and_ports_go_by_keyword_only() -> None:
@@ -141,26 +139,23 @@ def test_a_caller_supplied_argument_wins_and_ports_go_by_keyword_only() -> None:
 
 
 def test_a_function_keeps_its_name_its_return_value_and_its_declaration() -> None:
-  Container.install(GoldenBasket)
-
-  assert pick.__name__ == 'pick'
-  assert pick.__wrapped__ is not None  # type: ignore[attr-defined]
-  assert InvertDeclaration.of(pick) is not None
-  assert isinstance(basket_service(), BasketService)
+  with Harness.install(GoldenBasket):
+    assert pick.__name__ == 'pick'
+    assert pick.__wrapped__ is not None  # type: ignore[attr-defined]
+    assert InvertDeclaration.of(pick) is not None
+    assert isinstance(basket_service(), BasketService)
 
 
 def test_keys_and_an_optional_port_apply_to_functions() -> None:
-  Container.install(GoldenBasket, PlainBasket)
-
-  assert pick_plain('a') == 'plain'  # the ledger is optional and absent
-  Container.install(InkLedger)
-  assert pick_plain('a') == 'noted a plain'
+  with Harness.install(GoldenBasket, PlainBasket):
+    assert pick_plain('a') == 'plain'  # the ledger is optional and absent
+    with Harness.install(InkLedger):
+      assert pick_plain('a') == 'noted a plain'
 
 
 def test_an_explicit_map_applies_to_functions() -> None:
-  Container.install(GoldenBasket)
-
-  assert describe('fruit') == 'fruit:golden'
+  with Harness.install(GoldenBasket):
+    assert describe('fruit') == 'fruit:golden'
 
 
 def test_a_missing_required_port_raises_adapter_not_found() -> None:
@@ -169,33 +164,29 @@ def test_a_missing_required_port_raises_adapter_not_found() -> None:
 
 
 def test_resolution_behind_a_function_is_recursive() -> None:
-  Container.install(GoldenBasket, BasketService)
-
-  assert serve() == 'service:golden'
+  with Harness.install(GoldenBasket, BasketService):
+    assert serve() == 'service:golden'
 
 
 def test_a_function_can_build_an_adapter_by_hand_from_injected_ports() -> None:
-  Container.install(GoldenBasket)
-
-  assert basket_service().run() == 'service:golden'
+  with Harness.install(GoldenBasket):
+    assert basket_service().run() == 'service:golden'
 
 
 def test_methods_and_static_methods_are_functions_too() -> None:
-  Container.install(GoldenBasket)
-
-  assert Till().ring(2) == 'golden x2'
-  assert Till.peek() == 'golden'
+  with Harness.install(GoldenBasket):
+    assert Till().ring(2) == 'golden x2'
+    assert Till.peek() == 'golden'
 
 
 def test_functions_follow_the_current_environment() -> None:
-  Container.install(GoldenBasket)
-  first = pick()
-
-  Idunn().reset(environment='prod')
+  with Harness.install(GoldenBasket):
+    first = pick()
+    Idunn().reset(environment='prod')
+    with pytest.raises(AdapterNotFoundError):
+      pick()
 
   assert first == 'golden'
-  with pytest.raises(AdapterNotFoundError):
-    pick()
 
 
 def test_a_stacked_invert_on_a_function_raises() -> None:
@@ -243,9 +234,9 @@ def test_a_function_wrapped_by_another_decorator_still_counts_as_inverted() -> N
 
     return wrapper
 
-  Container.install(GoldenBasket)
-  logged_pick = logged(pick)
+  with Harness.install(GoldenBasket):
+    logged_pick = logged(pick)
 
-  assert logged_pick() == 'golden'
-  with pytest.raises(TypeError, match='more than once'):
-    Invert()(logged_pick)
+    assert logged_pick() == 'golden'
+    with pytest.raises(TypeError, match='more than once'):
+      Invert()(logged_pick)

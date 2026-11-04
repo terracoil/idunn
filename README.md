@@ -12,8 +12,8 @@ empty basket, an adapter is the apple you put in it, and a consumer just asks fo
 has to know which orchard it came from, which is rather the point of dependency inversion.
 
 This file is the everyday reference. **[About Idunn](./docs/ABOUT.md)** explains why it looks the
-way it does, and **[Advanced](./docs/ADVANCED.md)** covers environments, keys, test isolation and
-the engine, for the days the everyday is not enough.
+way it does, and **[Advanced](./docs/ADVANCED.md)** covers environments, keys, testing with
+`idunn.testing` and the engine, for the days the everyday is not enough.
 
 ---
 
@@ -347,5 +347,6 @@ dependencies, or CI will notice. Idunn supports Python 3.11 and newer
 - [About Idunn](./docs/ABOUT.md): the model, and the reasons behind the short list of things it
   refuses to do.
 - [Advanced](./docs/ADVANCED.md): environments and keys, the full `@Invert` contract, discovery
-  options, `describe()`, test isolation, exceptions, limitations, and maintainer notes.
+  options, `describe()`, testing with `idunn.testing`, exceptions, limitations, and maintainer
+  notes.
 - [Class catalog](./docs/classes.md): every class in the package, public or hidden.

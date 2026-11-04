@@ -6,7 +6,14 @@ from collections.abc import Callable, Iterable
 from functools import partial
 from typing import Any
 
-from idunn.domain import AdapterMetadata, LifecycleEnum, ParameterPlan, PortBinding, ReportMap
+from idunn.domain import (
+  AdapterMetadata,
+  EngineSnapshot,
+  LifecycleEnum,
+  ParameterPlan,
+  PortBinding,
+  ReportMap,
+)
 from idunn.internal import AutoDiscovery, BootstrapGate, InversionMapper, InversionResolver
 from idunn.util import Environment, MetaSingleton, QualifiedName
 
@@ -18,7 +25,8 @@ class Idunn(metaclass=MetaSingleton):
   from each library entry point, plus ``reset()`` and ``describe()`` for tests and the curious.
   Registration, selection and construction live behind it in
   :class:`~idunn.internal.InversionMapper` and :class:`~idunn.internal.InversionResolver`, and
-  there is deliberately no public ``resolve()`` to tempt business code into calling it.
+  there is deliberately no public ``resolve()`` to tempt business code into calling it, nor a
+  public register: tests that need one borrow ``idunn.testing.Harness``, which undoes itself.
   """
 
   def __init__(self) -> None:
@@ -118,3 +126,34 @@ class Idunn(metaclass=MetaSingleton):
     constructors use, so an ``@Invert`` function and an adapter cannot disagree about it.
     """
     return self._resolver.inject(parameter=parameter, environment=self._environment)
+
+  def _install(self, adapters: tuple[type[Any], ...]) -> None:
+    """Register ``adapters`` as one atomic batch, for ``Harness.install`` only."""
+    self._mapper.register_batch(adapters=adapters)
+
+  def _override(self, port: type[Any], instance: object, *, key: str | None) -> None:
+    """Make ``port`` and ``key`` resolve to ``instance``, for ``Harness.override`` only."""
+    self._resolver.override(port=port, key=key, instance=instance)
+
+  def _restore(self, snapshot: EngineSnapshot) -> None:
+    """Put the environment, catalog, singletons, overrides and bootstrap memory back as captured.
+    Each part swaps in whole, the way ``reset()`` does, so a build or a discovery still running
+    lands in what it started with and the restored state never hears about it.
+    """
+    self._environment = snapshot.environment
+    self._mapper.restore(snapshot.catalog)
+    self._resolver.restore(snapshot)
+    self._gate.restore(snapshot)
+
+  def _snapshot(self) -> EngineSnapshot:
+    """Capture everything a ``Harness`` block may change, for :meth:`_restore` to put back."""
+    instances, overrides = self._resolver.snapshot()
+    reports, carried = self._gate.snapshot()
+    return EngineSnapshot(
+      environment=self._environment,
+      catalog=self._mapper.catalog,
+      instances=instances,
+      overrides=overrides,
+      reports=reports,
+      carried=carried,
+    )

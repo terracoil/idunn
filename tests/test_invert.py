@@ -3,9 +3,8 @@
 from typing import Protocol
 
 import pytest
-from idunn import Adapter, AdapterNotFoundError, Idunn, Invert, LifecycleEnum, Port
-
-from _support import Container
+from idunn import Adapter, AdapterNotFoundError, Invert, LifecycleEnum, Port
+from idunn.testing import Harness
 
 
 @Port
@@ -88,46 +87,44 @@ class ServiceConsumer:
 
 
 def test_invert_auto_injects_and_assigns_self() -> None:
-  Container.install(GoldenBasket)
-  consumer = Consumer(label='hi')
-  assert consumer.label == 'hi'
-  assert isinstance(consumer.basket, GoldenBasket)
-  assert consumer.basket.take() == 'golden'
+  with Harness.install(GoldenBasket):
+    consumer = Consumer(label='hi')
+    assert consumer.label == 'hi'
+    assert isinstance(consumer.basket, GoldenBasket)
+    assert consumer.basket.take() == 'golden'
 
 
 def test_invert_caller_argument_overrides_injection() -> None:
-  Container.install(GoldenBasket)
-
   class Manual:
     def take(self) -> str:
       return 'manual'
 
   manual = Manual()
-  consumer = Consumer(basket=manual, label='hi')
+  with Harness.install(GoldenBasket):
+    consumer = Consumer(basket=manual, label='hi')
   assert consumer.basket is manual
 
 
 def test_invert_keys_selects_keyed_adapter() -> None:
-  Container.install(PlainBasket)
-  consumer = KeyedConsumer()
-  assert isinstance(consumer.basket, PlainBasket)
+  with Harness.install(PlainBasket):
+    consumer = KeyedConsumer()
+    assert isinstance(consumer.basket, PlainBasket)
 
 
 def test_invert_keys_picks_keyed_while_plain_invert_picks_unkeyed() -> None:
-  Container.install(GoldenBasket, PlainBasket)
+  with Harness.install(GoldenBasket, PlainBasket):
+    plain_consumer = Consumer(label='hi')
+    keyed_consumer = KeyedConsumer()
 
-  plain_consumer = Consumer(label='hi')
-  keyed_consumer = KeyedConsumer()
-
-  assert isinstance(plain_consumer.basket, GoldenBasket)
-  assert isinstance(keyed_consumer.basket, PlainBasket)
+    assert isinstance(plain_consumer.basket, GoldenBasket)
+    assert isinstance(keyed_consumer.basket, PlainBasket)
 
 
 def test_invert_explicit_map_injects_param() -> None:
-  Container.install(GoldenBasket)
-  consumer = ExplicitConsumer(label='x')
-  assert consumer.label == 'x'
-  assert isinstance(consumer.basket, GoldenBasket)
+  with Harness.install(GoldenBasket):
+    consumer = ExplicitConsumer(label='x')
+    assert consumer.label == 'x'
+    assert isinstance(consumer.basket, GoldenBasket)
 
 
 def test_invert_unregistered_port_raises() -> None:
@@ -142,37 +139,36 @@ def test_invert_optional_dependency_honors_default_when_absent() -> None:
 
 
 def test_invert_optional_dependency_injects_when_available() -> None:
-  Container.install(GoldenBasket)
-  consumer = OptionalConsumer()
-  assert isinstance(consumer.basket, GoldenBasket)
+  with Harness.install(GoldenBasket):
+    consumer = OptionalConsumer()
+    assert isinstance(consumer.basket, GoldenBasket)
 
 
 def test_invert_optional_keyed_dependency_absent_uses_default() -> None:
   # An unkeyed adapter exists, but the requested key does not — optional, so default wins.
-  Container.install(GoldenBasket)
-  consumer = OptionalKeyedConsumer()
-  assert consumer.basket is None
+  with Harness.install(GoldenBasket):
+    consumer = OptionalKeyedConsumer()
+    assert consumer.basket is None
 
 
-def test_invert_reset_clears_singleton_instance_cache() -> None:
-  Container.install(GoldenBasket)
-  first = Consumer(label='a').basket
-  Idunn().reset(environment='local')
-  Container.install(GoldenBasket)
-  second = Consumer(label='b').basket
+def test_invert_install_block_takes_its_singletons_with_it() -> None:
+  with Harness.install(GoldenBasket):
+    first = Consumer(label='a').basket
+  with Harness.install(GoldenBasket):
+    second = Consumer(label='b').basket
   assert isinstance(first, GoldenBasket)
   assert isinstance(second, GoldenBasket)
-  assert first is not second  # reset dropped the cached singleton
+  assert first is not second  # the first block's exit dropped the cached singleton
 
 
 def test_invert_resolves_nested_constructor_injection() -> None:
-  Container.install(GoldenBasket, BasketService)
-  consumer = ServiceConsumer()
-  assert consumer.service.run() == 'service:golden'
+  with Harness.install(GoldenBasket, BasketService):
+    consumer = ServiceConsumer()
+    assert consumer.service.run() == 'service:golden'
 
 
 def test_invert_shares_singleton_adapter_across_consumers() -> None:
-  Container.install(GoldenBasket)
-  first = Consumer(label='a')
-  second = Consumer(label='b')
-  assert first.basket is second.basket
+  with Harness.install(GoldenBasket):
+    first = Consumer(label='a')
+    second = Consumer(label='b')
+    assert first.basket is second.basket

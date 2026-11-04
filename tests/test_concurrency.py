@@ -21,9 +21,10 @@ from idunn import (
   LifecycleEnum,
   Port,
 )
+from idunn.testing import Harness
 from idunn.util import KeyedLocks, QualifiedName
 
-from _support import Container, Racer, Resolve, Wiring
+from _support import Racer, Resolve, Wiring
 
 SINGLETON = LifecycleEnum.SINGLETON
 
@@ -89,17 +90,17 @@ def test_eight_threads_building_one_singleton_graph_for_the_first_time_get_one_i
     def __init__(self, *, pool: PoolPort) -> None:
       pass
 
-  Container.install(Settings, Pool)
-  handlers: list[Handler] = []
-  racer = Racer(timeout=10)
+  with Harness.install(Settings, Pool):
+    handlers: list[Handler] = []
+    racer = Racer(timeout=10)
 
-  racer.run(*(lambda: handlers.append(Handler()) for _ in range(8)))
+    racer.run(*(lambda: handlers.append(Handler()) for _ in range(8)))
 
-  assert racer.errors == []
-  assert sorted(built) == ['pool', 'settings']
-  pools = {id(handler.pool) for handler in handlers}  # type: ignore[attr-defined]
-  assert len(handlers) == 8
-  assert len(pools) == 1
+    assert racer.errors == []
+    assert sorted(built) == ['pool', 'settings']
+    pools = {id(handler.pool) for handler in handlers}  # type: ignore[attr-defined]
+    assert len(handlers) == 8
+    assert len(pools) == 1
 
 
 def test_transient_instances_stay_distinct_across_threads() -> None:
@@ -187,12 +188,11 @@ def test_a_singleton_constructor_may_join_a_worker_that_builds_another_singleton
       self.finished: bool = not worker.is_alive()
       self.inner: object = helpers[0].inner if helpers else None  # type: ignore[attr-defined]
 
-  Container.install(Inner, Outer)
+  with Harness.install(Inner, Outer):
+    outer = Resolve.port(OuterPort)
 
-  outer = Resolve.port(OuterPort)
-
-  assert outer.finished
-  assert outer.inner is Resolve.port(InnerPort)
+    assert outer.finished
+    assert outer.inner is Resolve.port(InnerPort)
 
 
 def test_a_singleton_constructor_may_build_another_singleton_on_its_own_thread() -> None:
@@ -218,12 +218,11 @@ def test_a_singleton_constructor_may_build_another_singleton_on_its_own_thread()
     def __init__(self) -> None:
       self.helper = Helper()  # a fresh resolve, mid-build, for a different singleton
 
-  Container.install(Inner, Outer)
+  with Harness.install(Inner, Outer):
+    outer = Resolve.port(OuterPort)
 
-  outer = Resolve.port(OuterPort)
-
-  assert outer.helper.inner is Resolve.port(InnerPort)
-  assert Resolve.port(OuterPort) is outer
+    assert outer.helper.inner is Resolve.port(InnerPort)
+    assert Resolve.port(OuterPort) is outer
 
 
 def test_a_reset_racing_a_singleton_build_keeps_the_stale_instance_out_of_the_new_cache() -> None:
@@ -241,21 +240,20 @@ def test_a_reset_racing_a_singleton_build_keeps_the_stale_instance_out_of_the_ne
       proceed.wait(timeout=5)
       built.append(self)
 
-  Container.install(Slow)
   stale: list[object] = []
   builder = threading.Thread(target=lambda: stale.append(Resolve.port(SlowPort)), daemon=True)
-  builder.start()
-  assert started.wait(timeout=5)
-
-  Idunn().reset(environment='local')  # mid-build: the builder captured the old generation
-  Container.install(Slow)
-  proceed.set()
-  builder.join(timeout=5)
-  fresh = Resolve.port(SlowPort)
+  with Harness.install(Slow):
+    builder.start()
+    assert started.wait(timeout=5)
+    Idunn().reset(environment='local')  # mid-build: the builder captured the old generation
+    with Harness.install(Slow):
+      proceed.set()
+      builder.join(timeout=5)
+      fresh = Resolve.port(SlowPort)
+      assert Resolve.port(SlowPort) is fresh
 
   assert not builder.is_alive()
   assert stale and fresh is not stale[0]
-  assert Resolve.port(SlowPort) is fresh
   assert len(built) == 2
 
 
@@ -704,13 +702,12 @@ class TestConsumerBuiltInsideAConstructor:
       def __init__(self, x: XPort) -> None:
         pass
 
-    Container.install(X, Y)
+    with Harness.install(X, Y):
+      with pytest.raises(InjectionCycleError) as cycle:
+        Resolve.port(XPort)
 
-    with pytest.raises(InjectionCycleError) as cycle:
-      Resolve.port(XPort)
-
-    assert str(cycle.value).endswith(' -> '.join(map(QualifiedName.of, (X, Y, X))))
-    assert Idunn()._resolver._building.current == ()  # restored on the way out of the failure
+      assert str(cycle.value).endswith(' -> '.join(map(QualifiedName.of, (X, Y, X))))
+      assert Idunn()._resolver._building.current == ()  # restored on the way out of the failure
 
   def test_on_two_interleaved_threads_both_raise_instead_of_deadlocking(self) -> None:
     # Julia's probe. The first thread holds X's lock inside X's constructor; the second takes Y's
@@ -752,13 +749,13 @@ class TestConsumerBuiltInsideAConstructor:
       def __init__(self, gate: GatePort, x: XPort) -> None:
         pass
 
-    Container.install(Gate, X, Y)
-    racer = Racer(timeout=5)
+    with Harness.install(Gate, X, Y):
+      racer = Racer(timeout=5)
 
-    racer.run(lambda: Resolve.port(XPort), lambda: x_held.wait(5) and Resolve.port(YPort))
+      racer.run(lambda: Resolve.port(XPort), lambda: x_held.wait(5) and Resolve.port(YPort))
 
-    assert [type(error) for error in racer.errors] == [InjectionCycleError, InjectionCycleError]
-    assert sorted(str(error).rsplit(': ', 1)[1] for error in racer.errors) == [
-      ' -> '.join(map(QualifiedName.of, (X, Y, X))),
-      ' -> '.join(map(QualifiedName.of, (Y, X, Y))),
-    ]
+      assert [type(error) for error in racer.errors] == [InjectionCycleError, InjectionCycleError]
+      assert sorted(str(error).rsplit(': ', 1)[1] for error in racer.errors) == [
+        ' -> '.join(map(QualifiedName.of, (X, Y, X))),
+        ' -> '.join(map(QualifiedName.of, (Y, X, Y))),
+      ]

@@ -18,7 +18,7 @@ cross.
 - [Choosing between adapters](#choosing-between-adapters)
 - [Discovery options](#discovery-options)
 - [Inspecting the graph](#inspecting-the-graph)
-- [Test isolation](#test-isolation)
+- [Testing](#testing)
 - [Exceptions](#exceptions)
 - [Limitations and non-features](#limitations-and-non-features)
 - [Maintainer notes](#maintainer-notes)
@@ -64,7 +64,8 @@ served = harvest('Asgard')  # the same, for a function: its ports arrive as keyw
 
 At that moment Idunn:
 
-1. selects the active adapter for each `@Port`-typed parameter the caller did not supply;
+1. selects the active adapter for each `@Port`-typed parameter the caller did not supply (inside a
+   `Harness.override` block, the stand-in instead; see [Testing](#testing));
 2. plans that adapter's constructor once (cached until `reset()`), honouring its own `@Invert` keys
    and map, and recursively resolves its `@Port` parameters;
 3. instantiates dependencies first, then the adapter, and checks the instance satisfies the port;
@@ -359,11 +360,14 @@ yet.
 
 ![Idunn](https://github.com/terracoil/idunn/raw/master/docs/images/idunn-apple-square-50.png)
 
-## Test isolation
+## Testing
 
-`Idunn` is a process-wide singleton, so tests must reset it between cases. `reset()` keeps the same
-object, empties registrations, cached singleton instances and the `bootstrap` cache, and rebinds the
-environment:
+`Idunn` is one process-wide container, which is convenient right up until two tests share it.
+Three tools keep them apart, from the blunt to the precise.
+
+**Reset around every test.** `reset()` keeps the same object, empties registrations, cached
+singletons, overrides and the `bootstrap` cache, and rebinds the environment. An autouse fixture
+does it for every test, before and after, so a test that forgets to clean up cannot spoil the next:
 
 ```python
 import pytest
@@ -379,15 +383,78 @@ def _reset_idunn():
 
 `reset(environment=...)` resolves the environment from its argument, then `IDUNN_ENV`, then `local`.
 Because a reset empties the catalog, run it before discovery, not after; the other order is a very
-thorough way to test nothing. A reset also forgets each adapter's constructor plan, worked out on
-its first build: a test that monkeypatches an adapter's `__init__` after that keeps the old plan
-until the next reset.
+thorough way to test nothing.
 
-Adapters defined inside a test function are out of discovery's reach, and the facade has no public
-register or resolve. Idunn's own suite drives the internal engine through three seams in
-`tests/_support.py`: `Wiring`, a standalone mapper plus resolver; `Container.install(...)`, which
-pushes adapters into the singleton for `@Invert()` tests; and `Resolve.port(...)`, which builds one
-port through the facade's private door.
+**Fakes with an environment of their own.** When the fakes are real classes worth keeping, give
+them a package outside the application root and an environment nobody deploys, and let discovery
+do the wiring:
+
+```python
+# myapp_fakes/baskets.py
+from idunn import Adapter
+from myapp.ports import AppleBasketPort
+
+
+@Adapter(AppleBasketPort, envs={'test'})
+class WaxBasket:
+  def take_apple(self) -> str:
+    return 'a wax apple, very convincing'
+```
+
+```python
+@pytest.fixture
+def fake_orchard() -> None:
+  Idunn().reset(environment='test')
+  Idunn().autodiscover('myapp')
+  Idunn().autodiscover('myapp_fakes')
+```
+
+The production adapters it replaces must stay out of `test`: give them `envs={'local', 'prod'}`
+(or whatever your deployments are called). An adapter with no `envs` is active everywhere, `test`
+included, so it would collide with the fake, loudly, at the second `autodiscover`.
+
+**`idunn.testing.Harness`, for one test.** For a stand-in that lives one test long, borrow the
+harness. It is not the public register the facade refuses to have: everything it does is undone
+when its block ends.
+
+```python
+from idunn.testing import Harness
+
+
+def test_feast_with_a_wax_basket() -> None:
+  with Harness.override(AppleBasketPort, WaxBasket()):
+    assert Feast('Bragi').basket.take_apple() == 'a wax apple, very convincing'
+
+
+@Harness.install(GoldenAppleBasketAdapter)
+def test_feast_with_the_real_thing() -> None:
+  assert Feast('Bragi').basket.take_apple() == 'youth restored'
+```
+
+- `install(*adapters)` registers `@Adapter` classes for the block as one all-or-nothing batch, the
+  same one discovery uses, so a collision raises `InvalidAdapterError` before the block runs, with
+  nothing registered. It is also how adapters defined inside a test function, where discovery
+  cannot reach them, get in at all.
+- `override(port, instance, *, key=None)` makes `port` (with `key`) resolve to `instance`, ahead
+  of adapter selection: in every environment, with no adapter registered, wherever the port is
+  injected (a consumer, another adapter's constructor, an optional parameter). A caller-supplied
+  argument still wins. A port not marked `@Port` raises `InvalidPortError`, and an instance that
+  does not satisfy the port raises `InvalidAdapterError`, both before the block runs.
+- On exit, error or not, a block puts back exactly what it found: registrations, singletons,
+  overrides, `bootstrap` reports and the environment. A singleton built against a fake leaves
+  with the fake, and a `bootstrap` inside an install leaves no report vouching for registrations
+  that are gone. Blocks nest and unwind last in, first out.
+- An override reaches what is built inside its block. A singleton built before the block keeps the
+  dependency it was built with, so open the block before anything builds it. A `reset()` inside the
+  block is no shortcut: it drops the override along with the singleton.
+- As decorators, both re-enter on every call. They wrap plain functions only: an `async def` test
+  hands back its coroutine before a line of it runs, so put the `with` inside it instead.
+- The harness is process-wide, like the container: one test at a time per process. `pytest-xdist`
+  workers are separate processes, so they are fine; tests on threads side by side are not.
+
+One staleness to know about: an adapter's constructor plan is worked out on its first build and
+kept until the next `reset()` (a harness block keeps it too, since it depends only on the class).
+A test that monkeypatches an adapter's `__init__` after that keeps the old plan until it resets.
 
 ---
 
@@ -400,8 +467,8 @@ class below:
 
 | Class | Raised when |
 |---|---|
-| `InvalidPortError` | `@Port` is applied to anything but a Protocol (`Port(5)` included), an adapter names an unmarked port, an `@Invert` map value is not a port, a parameter is both port-annotated and mapped, or `keys` names a parameter that is not a port. |
-| `InvalidAdapterError` | `@Adapter` is applied to a non-class or twice to one class, two adapters collide (the discovery run that hits it registers nothing), or a built instance does not satisfy its port. |
+| `InvalidPortError` | `@Port` is applied to anything but a Protocol (`Port(5)` included), an adapter names an unmarked port, an `@Invert` map value is not a port, a parameter is both port-annotated and mapped, `keys` names a parameter that is not a port, or `Harness.override` is handed something that is not a port. |
+| `InvalidAdapterError` | `@Adapter` is applied to a non-class or twice to one class, two adapters collide (the discovery run or `Harness.install` that hits it registers nothing), or a built instance or a `Harness.override` stand-in does not satisfy its port. |
 | `AdapterNotFoundError` | No active adapter exists for a requested port and the parameter is not optional. |
 | `DiscoveryError` | A module below the discovery root fails to import and `strict=True`, or the root package does not live in a directory (a zip, say), whatever `strict` says. |
 | `MissingTypeHintError` | An adapter constructor parameter without a default has no annotation, or one that is not a port. |
@@ -454,13 +521,15 @@ The limitations are prices paid for a single process-wide container:
     either way.
   - Free-threaded builds (3.13t, 3.14t) should be fine, since the design leans only on atomic
     reference reads and single dictionary operations, but CI does not run one.
-- **Test isolation is your job.** See [above](#test-isolation).
+- **Test isolation is your job,** with help: `reset()` and `idunn.testing`. See
+  [Testing](#testing).
 
 The non-features are deliberate, so there is no point hunting for them:
 
 - **No public `resolve()`.** Resolving by hand invites container code into business logic. The only
   construction trigger is an `@Invert()` constructor or function; resolution still happens inside
-  it.
+  it. And no public register: `idunn.testing` installs and overrides only for one block (or one
+  decorated function), undone on exit, and nothing outside tests has any reason to import it.
 - **No lifecycle on `@Invert`.** Lifecycle belongs to the provider, `@Adapter`, the single source of
   truth for a binding.
 - **No priority or fallback ordering.** The only disambiguators are `key` and `envs`; overlaps fail
@@ -483,7 +552,67 @@ The implementation is intentionally class-heavy: all three decorators are classe
 `__new__`, `Adapter` and `Invert` via `__init__` plus `__call__`), support behavior lives in
 classes, there are no loose module-level functions, and every method has a single return point,
 guard clauses aside. The four layers (`app`, `domain`, `internal`, `util`) and their allowed import
-directions are enforced by `tests/test_architecture.py`.
+directions are enforced by `tests/test_architecture.py`, along with a fifth package, `testing`: it
+holds only the barrel that re-exports `Harness` from `app`, may import `app` alone, and no layer may
+import it, so production code cannot lean on test tooling even by accident. For a class-by-class
+map of the package see [`classes.md`](./classes.md).
+
+### Running Idunn's own suite
+
+Day to day, `poetry run pytest` runs everything on the development interpreter, 3.13.16 in the
+in-project `.venv`. Tests that drive a generated package end to end carry the `integration`
+marker, and `bin/devtool` wraps the lot:
+
+```bash
+poetry run bin/devtool test unit          # everything not marked integration
+poetry run bin/devtool test integration   # only the integration marker
+poetry run bin/devtool test all           # everything, on 3.13.16 and then on Python 3.14
+```
+
+`test all` runs twice on purpose. Python 3.14 defers annotations (PEP 649), so two `@Invert`
+contract tests, an unquoted forward reference with no `from __future__ import annotations` and the
+shape checks that must never evaluate a hint, only mean anything there; on older interpreters they
+skip, and a green 3.13 run would never notice them breaking. So after the poetry run, `test all`
+picks the newest CPython 3.14.x that pyenv has (free-threaded builds aside, and installing pyenv's
+latest 3.14 if there is none), keeps a venv for it in the git-ignored `tmp/venv-3.14` (rebuilt
+when its interpreter differs, reinstalled when `pyproject.toml` changes), and runs the suite again
+with the same `-k`, `-sv` and `-n` options; coverage belongs to the poetry run alone. Each
+interpreter's verdict is printed on its own line, and either one failing fails the command.
+
+CI goes wider: a `quality` job runs once on 3.13.16 (`poetry check --lock`, format, lint and
+strict mypy), and a `test` job runs pytest on 3.11, 3.12, 3.13.16 and 3.14. Before calling a
+change done, run the same gate locally:
+
+```bash
+poetry check --lock
+poetry run ruff format --check . && poetry run ruff check . && poetry run mypy
+poetry run bin/devtool test all
+```
+
+Thread tests start their targets through `Racer` (`tests/_support.py`): daemon threads released
+by one barrier, with any thread still alive after the timeout recorded as a `TimeoutError`, so a
+deadlock fails the test instead of hanging the suite until someone notices it is lunchtime. The
+`eager_switching` fixture sets `sys.setswitchinterval(1e-6)` for races the GIL would otherwise
+hide. A race that passed once has merely not been caught yet, so run the concurrency tests ten
+times per interpreter before calling them green:
+
+```bash
+for _ in $(seq 10); do
+  poetry run pytest -q tests/test_concurrency.py tests/test_catalog.py tests/test_injection.py \
+    tests/test_harness.py tests/test_bootstrap.py tests/test_bootstrap_gate.py
+done
+```
+
+On 3.14, swap `poetry run pytest` for `tmp/venv-3.14/bin/python -m pytest`, which `test all` keeps
+ready.
+
+The suite tests through the same doors users have where it can: `@Invert()` integration tests
+install adapters with `Harness`. Where the facade deliberately has no door, `tests/_support.py`
+keeps a few seams: `Wiring`, a standalone mapper plus resolver; `Resolve.port(...)`, which builds
+one port through the facade's private door; `PackageWriter`, for throwaway packages to discover;
+and `Racer`.
+
+### Releasing
 
 Before a release, check `authors`, the project URLs and the classifiers in `pyproject.toml`. Then:
 
@@ -491,5 +620,3 @@ Before a release, check `authors`, the project URLs and the classifiers in `pypr
 poetry build
 poetry publish
 ```
-
-For a class-by-class map of the package see [`classes.md`](./classes.md).
