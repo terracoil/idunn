@@ -8,7 +8,9 @@
 
 *"Everything should be made as simple as possible, but not simpler."* — Albert Einstein
 
-Idunn is a tiny dependency-inversion toolkit for Python. You can learn all of it from three
+Idunn is a tiny, constructor-time dependency-inversion toolkit for Python: nothing is built at
+import or at discovery, only when your code constructs a consumer (or calls an `@Invert()`
+function), and by then everything it needs is waiting. You can learn all of it from three
 decorators and one discovery call. The rest of this article explains why it stops there, and why
 stopping there is the feature rather than an oversight.
 

@@ -35,6 +35,8 @@ syntax and APIs are rejected. Keep the classifiers and the CI matrix in step wit
 re-lock (`poetry lock`) after any dependency edit, or the quality job fails. Pytest, Ruff and mypy
 caches live under the git-ignored `tmp/`, and so does `tmp/venv-3.14`, which is how the suite runs
 on 3.14 locally (`bin/devtool test all`); a `tmp/venv-3.11` built the same way covers the floor.
+Release notes live in `CHANGELOG.md` (Keep a Changelog, one entry per release, shipped in the
+sdist); ADVANCED's "Releasing" notes link to it instead of repeating it.
 
 ## Architecture
 

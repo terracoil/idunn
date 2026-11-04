@@ -2,8 +2,9 @@
 
 ![Idunn](https://github.com/terracoil/idunn/raw/master/docs/images/idunn-landscape-2560x900.png)
 
-**Idunn** is a tiny, opinionated Python dependency-inversion toolkit built around
-**constructor-time injection only**: three decorators, one discovery call, nothing to configure.
+**Idunn** is a tiny, opinionated **constructor-time** dependency-inversion toolkit for Python:
+dependencies arrive when an `@Invert()` constructor or function is called, and not a moment sooner.
+Three decorators, one discovery call, nothing to configure.
 
 > *"Everything should be made as simple as possible, but not simpler."* — Albert Einstein
 
@@ -350,3 +351,4 @@ dependencies, or CI will notice. Idunn supports Python 3.11 and newer
   options, `describe()`, testing with `idunn.testing`, exceptions, limitations, and maintainer
   notes.
 - [Class catalog](./docs/classes.md): every class in the package, public or hidden.
+- [Changelog](./CHANGELOG.md): what changed in each release, and what to fix when upgrading to 2.0.

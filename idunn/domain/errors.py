@@ -12,15 +12,17 @@ class InvalidPortError(IdunnError):
   That covers ``@Port`` on anything but a Protocol (``Port(5)`` included), ``@Adapter`` naming
   an unmarked port, an ``@Invert({...})`` map value that is not a port, and resolving a non-port.
   It also covers the two ``@Invert`` contradictions about ports: a parameter both annotated with a
-  port and mapped to one, and ``keys`` naming a parameter that is not a port.
+  port and mapped to one, and ``keys`` naming a parameter that is not a port. ``Harness.override``
+  raises it too, before its block runs, when handed something that is not a port.
   """
 
 
 class InvalidAdapterError(IdunnError):
   """Raised when an adapter cannot be trusted with its port.
   That covers ``@Adapter`` on a non-class, ``@Adapter`` applied twice to one class, two adapters
-  sharing a port and key in overlapping environments (the batch that hits it registers nothing),
-  and a built instance that does not satisfy its port.
+  sharing a port and key in overlapping environments (the batch that hits it, discovery's or
+  ``Harness.install``'s, registers nothing), and a built instance or a ``Harness.override``
+  stand-in that does not satisfy its port.
   """
 
 

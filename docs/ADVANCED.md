@@ -281,8 +281,9 @@ Idunn().autodiscover(
   a matching package part prunes its whole subtree. They add to the test defaults, and a bare string
   counts as one pattern (`exclude='migrations'`). Because matching is per part, a pattern containing
   a dot (`'legacy.old'`) matches nothing, silently; use `'old'`, which skips every part named `old`
-  under the root, or `'legacy'` for the whole subtree. The root's own name never matches, so to discover in-package test fakes on purpose, make
-  the test package the root: `autodiscover('my_app.tests')`.
+  under the root, or `'legacy'` for the whole subtree. The root's own name never matches, so to
+  discover in-package test fakes on purpose, make the test package the root:
+  `autodiscover('my_app.tests')`.
 - **`strict`.** All modules import before anything registers, so with `strict=True` an unimportable
   module raises `DiscoveryError` naming it and leaves the catalog untouched; `bootstrap` does not
   cache the failure. With `strict=False` the module is skipped and listed in `skipped_modules`. Only
@@ -614,7 +615,9 @@ and `Racer`.
 
 ### Releasing
 
-Before a release, check `authors`, the project URLs and the classifiers in `pyproject.toml`. Then:
+Before a release, check `authors`, the project URLs and the classifiers in `pyproject.toml`, and
+give the release its entry in [`CHANGELOG.md`](../CHANGELOG.md). What changed, breaking or not, is
+written down there once, so these notes do not keep a second copy to fall out of date. Then:
 
 ```bash
 poetry build

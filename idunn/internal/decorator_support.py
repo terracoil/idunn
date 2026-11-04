@@ -17,7 +17,6 @@ class DecoratorSupport:
   @staticmethod
   def normalize_envs(envs: Iterable[str] | str | None) -> frozenset[str] | None:
     """Normalize ``envs`` to a frozenset of names, or ``None`` for "everywhere".
-
     Done at decoration, so the names already compare equal to what ``Environment.current``
     produces. An empty collection yields an empty set: an adapter that is active nowhere, which
     is legal if not especially useful.

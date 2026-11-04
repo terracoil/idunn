@@ -2,13 +2,13 @@
 name = "idunn"
 authors = [{ name = "Steven Miers", email = "steven.miers@gmail.com" }]
 readme = "README.md"
-version = "1.4"
-description = "A tiny constructor-time dependency inversion toolkit for Python."
+version = "2.0.0"
+description = "Constructor-time dependency inversion for Python: three decorators, one discovery call."
 license = "MIT"
 requires-python = ">=3.11,<4.0"
 keywords = ["dependency-injection", "inversion-of-control", "ioc", "decorators", "protocols"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
@@ -23,8 +23,13 @@ classifiers = [
 Homepage = "https://github.com/terracoil/idunn/blob/master/README.md"
 Repository = "https://github.com/terracoil/idunn"
 Documentation = "https://github.com/terracoil/idunn/tree/master/docs"
-Freyja = "https://pypi.org/project/freyja"
-Modgud = "https://pypi.org/project/modgud"
+Changelog = "https://github.com/terracoil/idunn/blob/master/CHANGELOG.md"
+Freyja = "https://github.com/terracoil/freyja"
+Modgud = "https://github.com/terracoil/modgud"
+
+[tool.poetry]
+# The wheel needs only the package; the changelog rides in the sdist beside README and LICENSE.
+include = [{ path = "CHANGELOG.md", format = "sdist" }]
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=8.0,<10.0"
