@@ -2,9 +2,9 @@
 Shape rules (names exist, mapped or keyed parameters are keyword-only, no stacking) read the code
 object, so they fire at decoration on every version. Annotation rules (map versus annotation, keys
 on ports only, port-annotated parameters keyword-only) need the type hints, so a forward reference
-postpones them to the first call. The
-generated modules exist because a forward reference is a module-level affair: a module that names a
-class it defines further down, or never defines at all until the test hands it one.
+postpones them to the first call. The generated modules exist because a forward reference is a
+module-level affair: a module that names a class it defines further down, or never defines at all
+until the test hands it one.
 """
 
 import functools

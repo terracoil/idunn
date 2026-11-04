@@ -24,7 +24,8 @@ poetry run ruff format --check . && poetry run ruff check .   # to fix: drop --c
 poetry run mypy                                        # strict; covers idunn/, tests/, examples/
 poetry check --lock                                    # pyproject valid, lock in step with it
 poetry build
-poetry run python -m examples.my_app.main             # runnable example (the README's my_app layout)
+poetry run python -m examples.classy.simple.main       # the README's my_app; see examples/*/*/
+IDUNN_ENV=prod poetry run python -m examples.classy.complex.main   # the shop, one env per run
 ```
 
 CI (`.github/workflows/ci.yml`) has two jobs. `quality` runs once on 3.13.16: `poetry check --lock`,
@@ -259,7 +260,8 @@ newly registered by that call.
   Because the facade has no register/resolve, engine tests use the seams in `tests/_support.py`:
   `Wiring` (a standalone mapper + resolver) for resolution tests, `Resolve.port` to build one port
   through the facade's private door as a required `ParameterPlan`, `PackageWriter` for throwaway
-  packages, and `Racer`.
+  packages, `ImportingCall` to run a callable mid-import (from a loader, with no module-body
+  frame), and `Racer`.
 - Thread tests start their targets through `Racer` (`_support.py`): daemon threads behind one
   barrier, with a thread still alive after the timeout recorded as a `TimeoutError`, so a deadlock
   fails the test instead of hanging the suite. The `eager_switching` fixture in `conftest.py` sets
@@ -267,23 +269,32 @@ newly registered by that call.
   repeatedly (ten times per interpreter, 3.14 through `tmp/venv-3.14/bin/python -m pytest`) before
   calling them green. ADVANCED, "Maintainer notes", documents all of this for humans.
 - Tests and `examples/` are type-checked under strict mypy; keep them fully annotated.
+- Examples are `examples/{classy,functional}/{simple,complex}/`, each a package with a guarded
+  `main.py`. `tests/test_examples.py` (integration) globs `examples/*/*/main.py`, runs each in a
+  scrubbed subprocess once per `expected.txt` (no `IDUNN_ENV`) or `expected.<env>.txt`
+  (`IDUNN_ENV=<env>`) and compares stdout exactly, then discovers each package in-process and
+  checks the report against the `Registers: ports; adapters` line of its `__init__` docstring. A
+  new example needs both. The README's "Normal usage" `my_app` listings are `examples/classy/simple`
+  minus module docstrings, with only the discovery root changed, and
+  `test_readme_normal_usage_quotes_the_simple_example_file_for_file` holds them to it, so edit the
+  example and the README together.
 - Tests import public names from their home barrel exactly as users do (`idunn`, or `idunn.testing`
   for `Harness`), and so do the generated-module source strings that tests write to `tmp_path`.
   Non-public names come from the highest re-exporting layer package (`idunn.domain`,
   `idunn.internal`, `idunn.util`), never from a module path. `tests/test_public_surface.py`
   enforces this in `tests/` and `examples/` for `from idunn... import` statements (a public name
   from any barrel but its home, `from idunn.app import Harness` included, is flagged) and for plain
-  `import idunn.x.y` module paths (`import idunn.internal`, a
-  layer package, is fine). The import strings in `test_architecture.py` are `LayerProbe` fixtures
-  and are exempt.
+  `import idunn.x.y` module paths (`import idunn.internal`, a layer package, is fine). The import
+  strings in `test_architecture.py` are `LayerProbe` fixtures and are exempt.
 
 ## Code style
 
-Beyond the global Python rules: 2-space indent, 100-column lines, single quotes (Ruff format), strict
-mypy, full type hints, single return point with guard clauses allowed. Behavior lives in classes, including all
-three decorators. `Port.__new__` returns the decorated Protocol and carries one `# type: ignore[misc]`
-because strict mypy requires `__new__` to return an instance. `Adapter` and `Invert` are `__init__` +
-`__call__` classes, so `Invert` is always applied with parentheses: `@Invert()`, never bare.
+Beyond the global Python rules: 2-space indent, 100-column lines, single quotes (Ruff format),
+strict mypy, full type hints, single return point with guard clauses allowed. Behavior lives in
+classes, including all three decorators. `Port.__new__` returns the decorated Protocol and carries
+one `# type: ignore[misc]` because strict mypy requires `__new__` to return an instance. `Adapter`
+and `Invert` are `__init__` + `__call__` classes, so `Invert` is always applied with parentheses:
+`@Invert()`, never bare.
 
 Ruff selects `B`, `D`, `E4/E7/E9`, `F`, `I`. Consequences: every public member in `idunn/` needs a
 docstring (tests are exempt from `D100`–`D104` and `D107`; `D105`/`D106` still apply), and

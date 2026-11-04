@@ -112,7 +112,7 @@ def test_autodiscover_registers_ports_before_adapters_across_modules(
 
   report = Idunn().autodiscover(pkg)
 
-  # register_adapter records the port implicitly; the port must still show up in the report.
+  # An adapter brings its port in implicitly; the port must still show up in the report.
   assert report['registered_ports'] == (f'{pkg}.z_contracts.AppleBasketPort',)
   assert report['registered_adapters'] == (f'{pkg}.a_impl.GoldenBasket',)
 
@@ -603,10 +603,3 @@ def test_autodiscover_reuses_the_module_running_as_main(tmp_path: Path) -> None:
 
   assert result.returncode == 0, result.stderr
   assert result.stdout.strip() == 'golden'
-
-
-def test_examples_my_app_follows_the_recommended_layout() -> None:
-  report = Idunn().autodiscover('examples.my_app')
-
-  assert report['registered_ports'] == ('examples.my_app.ports.AppleBasketPort',)
-  assert report['registered_adapters'] == ('examples.my_app.adapters.GoldenAppleBasketAdapter',)

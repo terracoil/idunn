@@ -73,7 +73,7 @@ at import or need optional dependencies you have not installed.
 An application owns its process, so it discovers once at startup and then builds the object graph:
 
 ```python
-# my_app/ports.py
+# your_app/ports.py
 from typing import Protocol
 
 from idunn import Port
@@ -85,7 +85,7 @@ class GreeterPort(Protocol):
 ```
 
 ```python
-# my_app/adapters.py
+# your_app/adapters.py
 from idunn import Adapter
 
 from .ports import GreeterPort
@@ -98,13 +98,13 @@ class PlainGreeterAdapter:
 ```
 
 ```python
-# my_app/main.py
+# your_app/main.py
 from idunn import Idunn, Invert
 
 from .ports import GreeterPort
 
 
-class MyApp:
+class App:
   greeter: GreeterPort  # assigned by @Invert
 
   @Invert()
@@ -116,8 +116,8 @@ class MyApp:
 
 
 if __name__ == '__main__':
-  Idunn().autodiscover('my_app')  # once, at startup
-  MyApp().run()  # MyApp.__init__ is @Invert()-decorated; the graph wires itself
+  Idunn().autodiscover('your_app')  # once, at startup
+  App().run()  # App.__init__ is @Invert()-decorated; the graph wires itself
 ```
 
 ### Libraries
@@ -210,7 +210,7 @@ my_app/
   adapters.py
 ```
 
-The same app lives in [`/examples/my_app`](./examples/my_app/).
+The same app lives in [`examples/classy/simple`](./examples/classy/simple/).
 
 ```python
 # my_app/ports.py
@@ -221,7 +221,11 @@ from idunn import Port
 
 @Port
 class AppleBasketPort(Protocol):
-  def take_apple(self) -> str: ...
+  """Source of apples that keep the gods young."""
+
+  def take_apple(self) -> str:
+    """Return an apple from the basket."""
+    ...
 ```
 
 ```python
@@ -233,7 +237,10 @@ from .ports import AppleBasketPort
 
 @Adapter(AppleBasketPort, lifecycle=LifecycleEnum.SINGLETON)
 class GoldenAppleBasketAdapter(AppleBasketPort):
+  """The one basket ``AppleBasketPort`` resolves to, built once and shared by everyone."""
+
   def take_apple(self) -> str:
+    """Hand out a golden apple."""
     return 'youth restored'
 ```
 
@@ -245,13 +252,19 @@ from .ports import AppleBasketPort
 
 
 class Feast:
+  """An ``@Invert()`` root: its basket arrives when it is constructed.
+  The port sits after ``*``, keyword-only, so ``Feast('Bragi')`` can only mean the host.
+  """
+
   basket: AppleBasketPort  # declared for the type checker; @Invert assigns it
 
   @Invert()
   def __init__(self, host: str, *, basket: AppleBasketPort) -> None:
-    self.host = host  # self.basket is injected and assigned for you
+    """Keep ``host``; ``self.basket`` is already injected and assigned by the time this runs."""
+    self.host: str = host
 
   def serve(self) -> str:
+    """Serve the feast with an apple from the injected basket."""
     return f'{self.host}: {self.basket.take_apple()}'
 
 
@@ -261,8 +274,17 @@ if __name__ == '__main__':
 ```
 
 Run it as a module, `python -m my_app.main`. Run by path, the relative imports have nothing to be
-relative to and Python says so. In this repo the copy is one package deeper, so it runs with
-`poetry run python -m examples.my_app.main` and discovers `'examples.my_app'`.
+relative to and Python says so. In this repo the copy sits two packages deeper, so it runs with
+`poetry run python -m examples.classy.simple.main` and discovers `'examples.classy.simple'`. That
+root is the one line that differs from the listings above; the files also keep module docstrings,
+which the listings leave out to spare you the scrolling.
+
+More examples: [`examples/functional/simple`](./examples/functional/simple/) is the same app
+with an `@Invert()` function where the class was, and
+[`examples/classy/complex`](./examples/classy/complex/) and
+[`examples/functional/complex`](./examples/functional/complex/) run a small shop that leans on most
+of [Advanced](./docs/ADVANCED.md), once with classes and once with functions. The suite runs all
+four and checks every line they print.
 
 ---
 

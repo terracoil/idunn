@@ -127,6 +127,10 @@ parameters. The list below covers everything else that might bite.
 - The mypy cache joins Pytest's and Ruff's under the git-ignored `tmp/`. The unused `pillow` and
   `poetry-dynamic-versioning` dev dependencies and the redundant license classifier are gone. The
   sdist now carries this file.
+- `examples/my_app` became four examples, `examples/{classy,functional}/{simple,complex}`, one
+  pair with consumer classes and one with consumer functions. The suite runs every one and checks
+  each line it prints, and the README's "Normal usage" listings are pinned to
+  `examples/classy/simple`, so neither can drift from the code.
 
 ### Internal
 

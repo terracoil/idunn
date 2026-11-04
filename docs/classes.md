@@ -49,8 +49,9 @@
       method lists in Purpose are complete.
     • compare the Exceptions table with the "Exceptions" table in ADVANCED.md and
       the docstrings in idunn/domain/errors.py; all three must agree.
-    • spot-check the Examples section against examples/my_app/ specifically;
-      it drifts most often (new demo classes get added there first).
+    • spot-check the Examples section against examples/*/*/ specifically (one row
+      per class, sub-packages included; the functional consumers are functions, so
+      they appear in Purpose text, not as rows); it drifts most often.
 
   STEP 6 — Keep the `---` + apple-image separator between every `##` section, and no
     emoji in headings, tables, the legend or bullets. Preserve the two legends and the
@@ -61,7 +62,7 @@
   SOURCES OF TRUTH to verify against:
     idunn/__init__.py · idunn/testing/__init__.py · idunn/app/port.py ·
     idunn/app/adapter.py · idunn/app/invert.py · idunn/app/idunn.py · idunn/app/harness.py ·
-    idunn/domain/* · idunn/internal/* · idunn/util/* · examples/my_app/*
+    idunn/domain/* · idunn/internal/* · idunn/util/* · examples/*/*/ (recursively)
 ═══════════════════════════════════════════════════════════════════════════════
 -->
 
@@ -211,17 +212,90 @@ covers the family.
 
 ## Examples: `examples/`
 
-Teaching code: Public as *documentation*, but not part of the importable library. `examples/my_app`
-is the README's `my_app` layout as a **discoverable package**, run from the repo root with
-`poetry run python -m examples.my_app.main`. It shows the real workflow:
-`Idunn().autodiscover('examples.my_app')` under `main.py`'s `if __name__ == '__main__':` guard, then
-`@Invert()`-root construction, with imports only from `idunn`.
+Teaching code: Public as *documentation*, but not part of the importable library or the wheel.
+Four packages, two trees (`classy/` consumers are classes, `functional/` consumers are functions)
+of one simple and one complex example each, importing only from `idunn`. Each has a guarded
+`main.py`, an `__init__` docstring whose `Registers:` line names what discovering the package
+finds, and an `expected*.txt` with its exact output, one file per environment where it declares
+several; `tests/test_examples.py` holds every example to both. Run one from the repo root with
+`poetry run python -m examples.<tree>.<name>.main`, the complex ones under `IDUNN_ENV=local` or
+`prod`. Functions are not classes, so the functional consumers appear in the purposes below, not
+as rows.
+
+### `classy/simple`: the README's `my_app`
+
+`main.py` discovers `'examples.classy.simple'` and prints `Bragi: youth restored`.
 
 | File | Class | Nature | Purpose |
 |------|-------|--------|---------|
-| `my_app/ports.py` | `AppleBasketPort` | Passive | `@Port` Protocol: a contract with a single `take_apple()` method. |
-| `my_app/adapters.py` | `GoldenAppleBasketAdapter` | Active | Unkeyed `@Adapter` (singleton) for `AppleBasketPort`; answers a plain `@Invert()`. |
-| `my_app/main.py` | `Feast` | Active | Plain `@Invert()` root, `(self, host: str, *, basket: AppleBasketPort)`: the keyword-only port is injected and assigned to `self.basket` automatically, so `Feast('Bragi')` can only mean the host. |
+| `classy/simple/ports.py` | `AppleBasketPort` | Passive | `@Port` Protocol: a contract with a single `take_apple()` method. |
+| `classy/simple/adapters.py` | `GoldenAppleBasketAdapter` | Active | Unkeyed `@Adapter` (singleton) for `AppleBasketPort`; answers a plain `@Invert()`. |
+| `classy/simple/main.py` | `Feast` | Active | Plain `@Invert()` root, `(self, host: str, *, basket: AppleBasketPort)`: the keyword-only port is injected and assigned to `self.basket` automatically, so `Feast('Bragi')` can only mean the host. |
+
+### `functional/simple`: the same, without a class
+
+The consumer is `feast(host: str, *, basket: AppleBasketPort) -> str` in `main.py`, an `@Invert()`
+function that receives the basket as a keyword argument and keeps it nowhere. Same output.
+
+| File | Class | Nature | Purpose |
+|------|-------|--------|---------|
+| `functional/simple/ports.py` | `AppleBasketPort` | Passive | Same as in `classy/simple`. |
+| `functional/simple/adapters.py` | `GoldenAppleBasketAdapter` | Active | Same as in `classy/simple`; here it answers `feast`'s `basket`. |
+
+### `classy/complex`: the shop
+
+`main.py` autodiscovers only the application, `examples.classy.complex.shop`, then uses the `mead`
+library, which bootstraps its own root, and prints `describe()` last. Under `local` and `prod` the
+receipts, the skald and the `selected:` lines differ; `expected.local.txt` and `expected.prod.txt`
+pin both.
+
+| File | Class | Nature | Purpose |
+|------|-------|--------|---------|
+| `classy/complex/shop/ports.py` | `StoreroomPort` | Passive | `@Port`: `take(count)` and `remaining()`. One of five ports in one module, on purpose. |
+| `classy/complex/shop/ports.py` | `PaymentPort` | Passive | `@Port`: `charge(customer, amount)`, with two adapters told apart by `envs=`. |
+| `classy/complex/shop/ports.py` | `HeraldPort` | Passive | `@Port`: `announce(news)`. Only keyed adapters, so `describe()` shows `selected: <none>`. |
+| `classy/complex/shop/ports.py` | `SagaPort` | Passive | `@Port`: `tell(deed)`, consumed as an optional `SagaPort \| None`. |
+| `classy/complex/shop/ports.py` | `CheckoutPort` | Passive | `@Port`: `sell(customer, count)`. |
+| `classy/complex/shop/stock_view.py` | `StockView` | Passive | Plain Protocol, deliberately not a port: `remaining()` only, the read-only hint an explicit map fills with `StoreroomPort`. |
+| `classy/complex/shop/storeroom.py` | `Storeroom` | Active (state) | `SINGLETON` `StoreroomPort` holding six apples. Every till shares it, so stock carries over between sales; overselling raises `ValueError`. |
+| `classy/complex/shop/rune_tally_payment.py` | `RuneTallyPayment` | Active | `PaymentPort` with `envs='local'`. |
+| `classy/complex/shop/gold_coffer_payment.py` | `GoldCofferPayment` | Active | `PaymentPort` with `envs='prod'`. Never active alongside the rune stick, so an unkeyed resolve finds the stick in `local`, the gold in `prod`, and never both. |
+| `classy/complex/shop/raven_herald.py` | `RavenHerald` | Active | `HeraldPort` with `key='raven'`. |
+| `classy/complex/shop/gjallarhorn_herald.py` | `GjallarhornHerald` | Active | `HeraldPort` with `key='horn'`. |
+| `classy/complex/shop/skald_saga.py` | `SkaldSaga` | Active | `SagaPort` with `envs='local'`; in `prod` the optional parameter receives `None`. |
+| `classy/complex/shop/till.py` | `Till` | Active | `TRANSIENT` `CheckoutPort` whose undecorated constructor takes `StoreroomPort` and `PaymentPort` by keyword; takes the stock before the money. |
+| `classy/complex/shop/stall.py` | `Stall` | Active | `@Invert(keys={'crier': 'horn'})` consumer, `(self, keeper: str, *, till, crier, saga: SagaPort \| None = None)`. |
+| `classy/complex/shop/stocktaker.py` | `Stocktaker` | Active | `@Invert({'stock': StoreroomPort}, keys={'messenger': 'raven'})` consumer: the map fills a `StockView` hint. |
+| `classy/complex/mead/ports.py` | `BrewPort` | Passive | The library's `@Port`: `draw()`. |
+| `classy/complex/mead/brewery.py` | `KvasirBrewery` | Active | Unkeyed `@Adapter` for `BrewPort`. |
+| `classy/complex/mead/cupbearer.py` | `Cupbearer` | Active | The library's internal `@Invert()` consumer of `BrewPort`. |
+| `classy/complex/mead/hall.py` | `MeadHall` | Active | The library's one export. Its constructor calls `Idunn().bootstrap('examples.classy.complex.mead')`, then builds a `Cupbearer`, so the library wires itself on first use and a second hall is a cache hit. |
+
+### `functional/complex`: the shop, as functions
+
+The port implementations are copies of the classes in `classy/complex`, and the output is the same
+apart from module paths. Every consumer is a function: `open_stall` (`keys={'crier': 'horn'}`),
+`sell` (optional `saga`) and `take_stock` (the `StockView` map, `keys={'messenger': 'raven'}`) in
+`shop/`, and in `mead/` the `@Invert()` function `pour_for` behind `pour`, the entry point that
+calls `bootstrap`.
+
+| File | Class | Nature | Purpose |
+|------|-------|--------|---------|
+| `functional/complex/shop/ports.py` | `StoreroomPort` | Passive | Same as in `classy/complex`. |
+| `functional/complex/shop/ports.py` | `PaymentPort` | Passive | Same as in `classy/complex`. |
+| `functional/complex/shop/ports.py` | `HeraldPort` | Passive | Same as in `classy/complex`. |
+| `functional/complex/shop/ports.py` | `SagaPort` | Passive | Same as in `classy/complex`. |
+| `functional/complex/shop/ports.py` | `CheckoutPort` | Passive | Same as in `classy/complex`. |
+| `functional/complex/shop/stock_view.py` | `StockView` | Passive | Same as in `classy/complex`; filled for `take_stock`. |
+| `functional/complex/shop/storeroom.py` | `Storeroom` | Active (state) | Same as in `classy/complex`; it outlives every call. |
+| `functional/complex/shop/rune_tally_payment.py` | `RuneTallyPayment` | Active | Same as in `classy/complex`. |
+| `functional/complex/shop/gold_coffer_payment.py` | `GoldCofferPayment` | Active | Same as in `classy/complex`. |
+| `functional/complex/shop/raven_herald.py` | `RavenHerald` | Active | Same as in `classy/complex`. |
+| `functional/complex/shop/gjallarhorn_herald.py` | `GjallarhornHerald` | Active | Same as in `classy/complex`. |
+| `functional/complex/shop/skald_saga.py` | `SkaldSaga` | Active | Same as in `classy/complex`. |
+| `functional/complex/shop/till.py` | `Till` | Active | Same as in `classy/complex`: a function form changes the consumers, not the adapters. |
+| `functional/complex/mead/ports.py` | `BrewPort` | Passive | Same as in `classy/complex`. |
+| `functional/complex/mead/brewery.py` | `KvasirBrewery` | Active | Same as in `classy/complex`. |
 
 ---
 

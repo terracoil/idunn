@@ -1,0 +1,14 @@
+"""The shop again, with every consumer a function: what ``@Invert()`` looks like without ``self``.
+Port implementations are still classes, because a Protocol needs something to satisfy it, and
+they are copies of the classes in ``examples.classy.complex``. Everything that consumes a port is a
+function: ``envs=`` still picks the payment, ``key=`` still picks a herald per parameter, the
+``SINGLETON`` storeroom still outlives every call, ``Till`` still takes ports in its constructor,
+``SagaPort | None`` is still optional, the explicit map still fills a ``StockView``, ports are
+keyword-only, and the ``mead`` library's entry point is a function that calls ``bootstrap``.
+Registers: BrewPort, CheckoutPort, HeraldPort, PaymentPort, SagaPort, StoreroomPort;
+  GjallarhornHerald, GoldCofferPayment, KvasirBrewery, RavenHerald, RuneTallyPayment, SkaldSaga,
+  Storeroom, Till
+Run from the repo root, once per environment, and compare:
+``IDUNN_ENV=local poetry run python -m examples.functional.complex.main`` and the same with
+``prod``.
+"""

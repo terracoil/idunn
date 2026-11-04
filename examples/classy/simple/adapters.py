@@ -1,4 +1,4 @@
-"""Adapters for ``my_app``, kept beside ``ports`` for the humans; Idunn would find them anywhere."""
+"""Adapters, kept beside ``ports`` for the humans; Idunn would find them anywhere under the root."""
 
 from idunn import Adapter, LifecycleEnum
 

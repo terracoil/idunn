@@ -391,9 +391,9 @@ them a package outside the application root and an environment nobody deploys, a
 do the wiring:
 
 ```python
-# myapp_fakes/baskets.py
+# my_app_fakes/baskets.py
 from idunn import Adapter
-from myapp.ports import AppleBasketPort
+from my_app.ports import AppleBasketPort
 
 
 @Adapter(AppleBasketPort, envs={'test'})
@@ -406,8 +406,8 @@ class WaxBasket:
 @pytest.fixture
 def fake_orchard() -> None:
   Idunn().reset(environment='test')
-  Idunn().autodiscover('myapp')
-  Idunn().autodiscover('myapp_fakes')
+  Idunn().autodiscover('my_app')
+  Idunn().autodiscover('my_app_fakes')
 ```
 
 The production adapters it replaces must stay out of `test`: give them `envs={'local', 'prod'}`

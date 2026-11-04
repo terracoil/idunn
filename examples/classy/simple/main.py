@@ -1,9 +1,8 @@
-"""Entry point for ``my_app``: discover once, then just construct things.
-Run from the repo root with ``poetry run python -m examples.my_app.main``. The discovery root is
-``'examples.my_app'`` because here ``my_app`` lives inside the ``examples`` package; in your own
-project it is plain ``'my_app'``. Discovery imports every module under the root, this one
-included, so the actual work hides under the ``__main__`` guard. Run with ``-m``, the copy you are
-running is reused rather than imported a second time.
+"""Entry point: discover once, then just construct things.
+The root is ``'examples.classy.simple'`` because this copy lives two packages down inside
+``examples``; in your own project it is plain ``'my_app'``. Discovery imports every module under
+the root, this one included, so the work hides under the ``__main__`` guard. Run with ``-m``, the
+running copy is reused rather than imported a second time.
 """
 
 from idunn import Idunn, Invert
@@ -21,7 +20,7 @@ class Feast:
   @Invert()
   def __init__(self, host: str, *, basket: AppleBasketPort) -> None:
     """Keep ``host``; ``self.basket`` is already injected and assigned by the time this runs."""
-    self.host = host
+    self.host: str = host
 
   def serve(self) -> str:
     """Serve the feast with an apple from the injected basket."""
@@ -29,5 +28,5 @@ class Feast:
 
 
 if __name__ == '__main__':
-  Idunn().autodiscover('examples.my_app')
+  Idunn().autodiscover('examples.classy.simple')
   print(Feast('Bragi').serve())  # Bragi: youth restored
