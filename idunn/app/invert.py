@@ -7,7 +7,7 @@ from collections.abc import Callable, Mapping
 from typing import Any, TypeVar
 
 from idunn.domain import FunctionShape, InvalidPortError, InvertDeclaration
-from idunn.internal import ConstructorPlanner, LazyPlan, PortRegistry
+from idunn.internal import ConstructorPlanner, DecoratorSupport, LazyPlan, PortRegistry
 from idunn.util import QualifiedName
 
 from .idunn import Idunn
@@ -58,18 +58,13 @@ class Invert:
   def __call__(self, function: Callable[..., R]) -> Callable[..., R]:
     """Wrap ``function`` so its port parameters are filled in when it is called."""
     if InvertDeclaration.of(function) is not None:
-      message = (
+      message: str = (
         f'@Invert is applied more than once to {QualifiedName.of(function)}; one function gets '
         'one declaration. Merge the two into a single @Invert(...).'
       )
       raise TypeError(message)
     shape: FunctionShape = ConstructorPlanner.check_shape(function, self._declaration)
-    lazy: LazyPlan = LazyPlan(
-      function,
-      shape=shape,
-      declaration=self._declaration,
-      keyword_only=ConstructorPlanner.KEYWORD_ONLY_PORTS,
-    )
+    lazy: LazyPlan = LazyPlan(function, shape=shape, declaration=self._declaration)
     lazy.try_now()  # annotation rules fire here, unless a forward reference makes them wait
     wrapper: Callable[..., R] = (
       self._constructor(function, shape=shape, lazy=lazy)
@@ -88,7 +83,7 @@ class Invert:
     """Capture explicit ``param -> port`` mappings and per-parameter adapter keys, checked now."""
     # Bare @Invert hands us the function as ``ports``; better a TypeError now than a riddle later.
     if callable(ports) and not isinstance(ports, Mapping):
-      message = (
+      message: str = (
         f'@Invert must be applied with parentheses on {QualifiedName.of(ports)}: '
         'use @Invert() or @Invert(keys=...)'
       )
@@ -104,11 +99,15 @@ class Invert:
       message = f'@Invert maps parameters to classes not marked with @Port: {", ".join(unmarked)}'
       raise InvalidPortError(message)
     unnamed: list[str] = [
-      f'{name!r}: {key!r}' for name, key in chosen.items() if type(key) is not str
+      f'{name!r}: {key!r}' for name, key in chosen.items() if not isinstance(key, str)
     ]
     if unnamed:
-      raise TypeError(f'@Invert keys must be str adapter keys: {", ".join(unnamed)}')
-    self._declaration: InvertDeclaration = InvertDeclaration.frozen(ports=explicit, keys=chosen)
+      message = f'@Invert keys must be str adapter keys: {", ".join(unnamed)}'
+      raise TypeError(message)
+    self._declaration: InvertDeclaration = InvertDeclaration.frozen(
+      ports=explicit,
+      keys={name: DecoratorSupport.plain_key(key) for name, key in chosen.items()},
+    )
 
   @staticmethod
   def _constructor(

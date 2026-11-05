@@ -21,7 +21,7 @@ class LazyPlan:
   decorate several. Two threads racing the first :meth:`get` build identical plans; one wins.
   """
 
-  __slots__ = ('_declaration', '_function', '_keyword_only', '_plan', '_shape')
+  __slots__ = ('_declaration', '_function', '_plan', '_shape')
 
   def __init__(
     self,
@@ -29,13 +29,11 @@ class LazyPlan:
     *,
     shape: FunctionShape,
     declaration: InvertDeclaration,
-    keyword_only: bool,
   ) -> None:
     """Remember what to plan; nothing is planned until :meth:`try_now` or :meth:`get`."""
     self._function: Callable[..., Any] = function
     self._shape: FunctionShape = shape
     self._declaration: InvertDeclaration = declaration
-    self._keyword_only: bool = keyword_only
     self._plan: tuple[ParameterPlan, ...] | None = None
 
   def get(self) -> tuple[ParameterPlan, ...]:
@@ -43,10 +41,7 @@ class LazyPlan:
     plan: tuple[ParameterPlan, ...] | None = self._plan
     if plan is None:
       plan = ConstructorPlanner.plan(
-        self._function,
-        shape=self._shape,
-        declaration=self._declaration,
-        keyword_only=self._keyword_only,
+        self._function, shape=self._shape, declaration=self._declaration
       )
       self._plan = plan
     return plan

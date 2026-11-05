@@ -34,3 +34,4 @@ logs
 .vscode/
 .python-version
 .claude/
+CLAUDE.local.md

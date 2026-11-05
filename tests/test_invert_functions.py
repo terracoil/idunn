@@ -9,6 +9,7 @@ from collections.abc import Callable
 from typing import Any, Protocol, cast
 
 import pytest
+
 from idunn import (
   Adapter,
   AdapterNotFoundError,
@@ -151,6 +152,18 @@ def test_keys_and_an_optional_port_apply_to_functions() -> None:
     assert pick_plain('a') == 'plain'  # the ledger is optional and absent
     with Harness.install(InkLedger):
       assert pick_plain('a') == 'noted a plain'
+
+
+def test_a_function_port_with_a_non_none_default_gets_that_default_when_absent() -> None:
+  spare = Manual()
+
+  @Invert()
+  def pick_spare(*, basket: BasketPort = spare) -> str:
+    return basket.take()
+
+  assert pick_spare() == 'manual'
+  with Harness.install(GoldenBasket):
+    assert pick_spare() == 'golden'
 
 
 def test_an_explicit_map_applies_to_functions() -> None:

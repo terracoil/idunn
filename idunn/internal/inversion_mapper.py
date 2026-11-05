@@ -4,12 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from threading import Lock
-from typing import Any, NoReturn
+from typing import Any
 
 from idunn.domain import (
   AdapterDeclaration,
   AdapterMetadata,
-  AdapterNotFoundError,
   Catalog,
   InvalidAdapterError,
   InvalidPortError,
@@ -74,15 +73,6 @@ class InversionMapper:
     """
     return self._catalog.find(port=port, key=key, environment=environment)
 
-  @property
-  def ports(self) -> frozenset[type[Any]]:
-    """Registered ports. Only the tests read this, to inspect the catalog without the facade."""
-    return self._catalog.ports
-
-  def register_adapter(self, adapter: type[Any]) -> bool:
-    """Register one ``@Adapter`` class; return whether it was new. A batch of one."""
-    return bool(self.register_batch(adapters=(adapter,))[1])
-
   def register_batch(
     self,
     *,
@@ -109,13 +99,6 @@ class InversionMapper:
         self._catalog = Catalog.freeze(ports=known_ports, adapters=known_adapters, slots=slots)
     return new_ports, new_adapters
 
-  def register_port(self, port: type[Any]) -> bool:
-    """Register a ``@Port`` Protocol; return whether it was new.
-    Ports register on their own, not only through adapters, so ``describe()`` and the report
-    still show a port that nobody has implemented yet.
-    """
-    return bool(self.register_batch(ports=(port,))[0])
-
   def restore(self, catalog: Catalog) -> None:
     """Swap back a catalog read earlier from :attr:`catalog`, undoing every batch since.
     No copy needed: a catalog never changes, so the old one is exactly as it was handed out.
@@ -123,17 +106,11 @@ class InversionMapper:
     with self._write_lock:
       self._catalog = catalog
 
-  def select(self, *, port: type[Any], key: str | None, environment: str) -> AdapterMetadata:
-    """Like :meth:`find`, but raise :class:`AdapterNotFoundError` when nothing matches."""
-    found: AdapterMetadata | None = self.find(port=port, key=key, environment=environment)
-    if found is None:
-      self._raise_adapter_not_found(port=port, key=key, environment=environment)
-    return found
-
   def _declaration_for(self, *, adapter: type[Any]) -> AdapterDeclaration:
-    declaration: Any = getattr(adapter, '__idunn_adapter_declaration__', None)
-    if declaration is None or not isinstance(declaration, AdapterDeclaration):
-      message = f'Adapter class is not marked with @Adapter: {QualifiedName.of(adapter)}'
+    # Own __dict__ only, as discovery reads it: an undecorated subclass is no adapter here either.
+    declaration: AdapterDeclaration | None = AdapterDeclaration.of(adapter)
+    if declaration is None:
+      message: str = f'Adapter class is not marked with @Adapter: {QualifiedName.of(adapter)}'
       raise InvalidAdapterError(message)
     return declaration
 
@@ -173,17 +150,9 @@ class InversionMapper:
     new: list[type[Any]] = []
     for port in ports:
       if not PortRegistry.is_port(port):
-        message = f'Port is not marked with @Port: {QualifiedName.of(port)}'
+        message: str = f'Port is not marked with @Port: {QualifiedName.of(port)}'
         raise InvalidPortError(message)
       if port not in known:
         known.add(port)
         new.append(port)
     return tuple(new)
-
-  def _raise_adapter_not_found(
-    self, *, port: type[Any], key: str | None, environment: str
-  ) -> NoReturn:
-    location = f'in {environment!r}'
-    detail = f' with key {key!r}' if key is not None else ''
-    message = f'No active adapter registered for port {QualifiedName.of(port)}{detail} {location}.'
-    raise AdapterNotFoundError(message)

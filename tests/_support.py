@@ -4,8 +4,8 @@ the people testing it. ``@Invert()`` integration tests install adapters with the
 ``idunn.testing.Harness`` users get. Engine-level tests drive :class:`Wiring` (a standalone mapper
 and resolver), :class:`Resolve` builds a port by hand through the facade's private door,
 discovery tests write throwaway packages with :class:`PackageWriter`, :class:`ImportingCall`
-runs a callable as a module body, for tests that need to be mid-import, and :class:`Racer` starts
-threads together and turns a deadlock into a failure instead of a hung suite.
+runs a callable as a module body, for tests that need to be mid-import, and :class:`Racer` runs
+every thread a test needs and turns a deadlock into a failure instead of a hung suite.
 """
 
 from __future__ import annotations
@@ -15,20 +15,25 @@ import importlib.abc
 import importlib.util
 import sys
 import threading
+import time
 import zipfile
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
+from functools import partial
 from importlib.machinery import ModuleSpec
 from pathlib import Path
 from textwrap import dedent
 from types import ModuleType
-from typing import Any
+from typing import Any, TypeVar, cast
 
 import pytest
+
 from idunn import Idunn
 from idunn.domain import ParameterPlan
 from idunn.internal import InversionMapper, InversionResolver
 from idunn.util import Environment
+
+R = TypeVar('R')
 
 
 class Wiring:
@@ -40,18 +45,18 @@ class Wiring:
     self.mapper: InversionMapper = InversionMapper()
     self.resolver: InversionResolver = InversionResolver(self.mapper)
 
-  @property
-  def ports(self) -> frozenset[type[Any]]:
-    """Ports registered in this engine's catalog."""
-    return self.mapper.ports
+  @classmethod
+  def of(cls, *adapters: type[Any], environment: str | None = None) -> Wiring:
+    """Return a fresh engine with ``adapters`` registered as one batch."""
+    table: Wiring = cls(environment)
+    table.mapper.register_batch(adapters=adapters)
+    return table
 
   def register_adapter(self, adapter: type[Any]) -> bool:
-    """Register a ``@Adapter`` class into this engine's catalog."""
-    return self.mapper.register_adapter(adapter)
-
-  def register_port(self, port: type[Any]) -> bool:
-    """Register a ``@Port`` Protocol into this engine's catalog."""
-    return self.mapper.register_port(port)
+    """Register one ``@Adapter`` class as a batch of one; return whether it was new.
+    Tests only: anything registering many classes batches them, since a loop of these is quadratic.
+    """
+    return bool(self.mapper.register_batch(adapters=(adapter,))[1])
 
   def resolve(self, port: type[Any], *, key: str | None = None) -> Any:
     """Resolve a port into an adapter instance for this engine's environment."""
@@ -59,39 +64,75 @@ class Wiring:
 
 
 class Racer:
-  """Runs callables on threads started together and collects whatever they raise."""
+  """Runs every thread a test needs and keeps what each returned or raised, by thread name.
+  Threads are daemons, and each :meth:`join` gives all of them one deadline, ``timeout`` seconds
+  from the moment it starts: a thread still running then is recorded as a ``TimeoutError``, so a
+  deadlock fails the test in seconds instead of hanging pytest, at the join or at exit.
+  :meth:`run` starts its targets together behind one barrier, :meth:`start` and :meth:`join` let
+  a test stagger them, and :meth:`call` runs one call that might hang, such as a gate regression
+  on what would be the main thread.
+  """
 
   def __init__(self, *, timeout: float = 30.0) -> None:
-    """Start with no errors recorded; a thread still running after ``timeout`` seconds is one."""
-    self.errors: list[BaseException] = []
+    """Start with no threads; ``timeout`` bounds the whole wait, not each thread's share of it."""
+    self.raised: dict[str, BaseException] = {}  # by thread name; timeouts included
+    self.results: dict[str, object] = {}  # by thread name, for targets that returned
     self._timeout: float = timeout
+    self._threads: list[threading.Thread] = []
 
-  def run(self, *targets: Callable[[], object]) -> None:
-    """Start every target behind one barrier, then wait for all of them.
-    A thread still running after the timeout is recorded as an error, and threads are daemons, so
-    a deadlock fails the test instead of hanging pytest at exit.
-    """
-    barrier = threading.Barrier(len(targets))
-    threads = [
-      threading.Thread(target=self._guarded, args=(barrier, target), daemon=True)
-      for target in targets
-    ]
-    for thread in threads:
-      thread.start()
-    for thread in threads:
-      thread.join(timeout=self._timeout)
-    self.errors.extend(
-      TimeoutError(f'{thread.name} still running after {self._timeout} s')
-      for thread in threads
-      if thread.is_alive()
+  def call(self, target: Callable[[], R]) -> R:
+    """Run ``target`` on its own thread, return what it returns, and raise what it raises."""
+    name: str = f'call-{len(self._threads)}'
+    self.start(name, target)
+    self.join()
+    error: BaseException | None = self.raised.get(name)
+    if error is not None:
+      raise error
+    return cast(R, self.results[name])
+
+  @property
+  def errors(self) -> list[BaseException]:
+    """Everything the threads raised, timeouts included, in the order it happened."""
+    return list(self.raised.values())
+
+  def join(self) -> None:
+    """Wait for every thread started so far, until the shared deadline."""
+    deadline: float = time.monotonic() + self._timeout
+    for thread in self._threads:
+      thread.join(timeout=max(0.0, deadline - time.monotonic()))
+    self.raised.update(
+      {
+        thread.name: TimeoutError(f'{thread.name} still running after {self._timeout} s')
+        for thread in self._threads
+        if thread.is_alive()
+      }
     )
 
-  def _guarded(self, barrier: threading.Barrier, target: Callable[[], object]) -> None:
+  def run(self, *targets: Callable[[], object]) -> None:
+    """Start every target behind one barrier, so they really race, then wait for all of them."""
+    barrier: threading.Barrier = threading.Barrier(len(targets))
+    for index, target in enumerate(targets):
+      self.start(f'racer-{index}', partial(self._behind, barrier, target))
+    self.join()
+
+  def start(self, name: str, target: Callable[[], object]) -> None:
+    """Start ``target`` now on a daemon thread called ``name``."""
+    thread: threading.Thread = threading.Thread(
+      target=self._guarded, args=(name, target), name=name, daemon=True
+    )
+    self._threads.append(thread)
+    thread.start()
+
+  @staticmethod
+  def _behind(barrier: threading.Barrier, target: Callable[[], object]) -> object:
+    barrier.wait()
+    return target()
+
+  def _guarded(self, name: str, target: Callable[[], object]) -> None:
     try:
-      barrier.wait()
-      target()
-    except BaseException as error:  # the assertion is that this list stays empty
-      self.errors.append(error)
+      self.results[name] = target()
+    except BaseException as error:  # the assertion is that nothing lands here, or exactly this
+      self.raised[name] = error
 
 
 class Resolve:

@@ -1,4 +1,4 @@
-"""Annotation and environment helpers shared by the decorators and the constructor planner."""
+"""Annotation, environment and key helpers for the decorators, the planner and the resolver."""
 
 from collections.abc import Iterable
 from typing import Any, get_args
@@ -27,14 +27,23 @@ class DecoratorSupport:
     return frozenset(Environment.normalize(item) for item in raw_vals)
 
   @staticmethod
+  def plain_key(key: str) -> str:
+    """Return ``key`` as a plain ``str``, so a ``StrEnum`` member is kept and printed as its value.
+    ``str.__str__`` rather than ``str()``: a ``(str, Enum)`` member's ``__str__`` answers
+    ``'Grade.GOLD'``, which would quietly stop it matching the ``'gold'`` it equals. Every key, from
+    ``@Adapter``, ``@Invert`` or ``Harness.override``, goes through here after its type check.
+    """
+    return str.__str__(key)
+
+  @staticmethod
   def port_from_annotation(annotation: Any) -> tuple[type[Any] | None, bool]:
     """Resolve a constructor annotation to ``(port, optional)``.
     A bare ``@Port`` annotation yields ``(port, False)``; ``Port | None`` yields ``(port, True)``,
     the ``| None`` being the signal that a missing adapter is survivable. Anything else yields
     ``(None, False)``.
     """
-    args = get_args(annotation)
-    non_none = tuple(arg for arg in args if arg is not type(None))
+    args: tuple[Any, ...] = get_args(annotation)
+    non_none: tuple[Any, ...] = tuple(arg for arg in args if arg is not type(None))
     result: tuple[type[Any] | None, bool]
     if PortRegistry.is_port(annotation):
       result = (annotation, False)

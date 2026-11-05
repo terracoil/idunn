@@ -63,15 +63,11 @@ class FreyjaDevTools:
 
   @classmethod
   def get_project_src(cls) -> str:
-    """Get pyproject source root."""
-    with open('pyproject.toml', 'rb') as f:
-      proj_map: dict[str, Any] = tomllib.load(f)
-    try:
-      proj_root: str = proj_map['tool']['poetry']['packages'][0]['include']
-    except Exception as x:  # noqa: BLE001 — fall back to the project name
-      print(f'Error getting proj_root; falling back to project_name: {x}')
-      proj_root = cls.get_project_name()
-    return proj_root
+    """Return the repository root: where pyproject.toml lives, and where every command runs.
+    Not the package directory: Poetry finds ``idunn/`` by name, so pyproject lists no packages to
+    read it from, and a command run from inside the package finds no ``dist/`` or ``tmp/`` there.
+    """
+    return str(REPO_ROOT)
 
   @classmethod
   def get_project_name(cls) -> str:
@@ -106,8 +102,8 @@ class FreyjaDevTools:
     self, command: str | list[str], **kwargs
   ) -> subprocess.CompletedProcess:
     """Execute subprocess with configured parameters."""
-    # Set default cwd if not provided
-    if 'cwd' not in kwargs:
+    # Default to the repo root; _run_command always passes cwd, often as None, so test for that.
+    if kwargs.get('cwd') is None:
       kwargs['cwd'] = self.project_src
     return subprocess.run(command, **kwargs)
 
@@ -268,7 +264,7 @@ class FreyjaDevTools:
       result_value = subprocess.CompletedProcess(command, 0, '', '') if capture_output else True
     else:
       try:
-        result_value = self._execute_subprocess(
+        completed: subprocess.CompletedProcess = self._execute_subprocess(
           command,
           shell=shell,
           check=check,
@@ -278,6 +274,9 @@ class FreyjaDevTools:
           cwd=cwd,
           env=env,
         )
+        # A finished process is truthy whatever its exit code, so an uncaptured run answers with
+        # its verdict, as promised above; otherwise every `if not _run_command(...)` is decorative.
+        result_value = completed if capture_output else completed.returncode == 0
       except (
         subprocess.CalledProcessError,
         subprocess.TimeoutExpired,
@@ -908,7 +907,7 @@ class FreyjaDevTools:
         )
 
   class Quality:
-    """Code quality, linting, diagnostics, and completion operations."""
+    """Code quality operations: formatting, linting and type checking."""
 
     def __init__(self, parent) -> None:
       """Initialize with parent FreyjaDevTools instance."""
@@ -951,9 +950,8 @@ class FreyjaDevTools:
         print(f'{parent.colors["blue"]}{"=" * 18} 🔧 RUNNING MYPY {"=" * 18}{parent.colors["nc"]}')
         print(f'{parent.colors["blue"]}{"=" * 60}{parent.colors["nc"]}\n')
 
-        # Use actual package name instead of git repo name
-        package_name = parent.project_src  # The actual Python package name
-        mypy_cmd = f'poetry run mypy {package_name}'
+        # The files to check come from [tool.mypy] in pyproject.toml: idunn, tests and examples.
+        mypy_cmd = 'poetry run mypy'
         # Generate reports if directories exist
         reports_dir = Path(parent.project_src) / 'reports' / 'mypy'
         if reports_dir.exists():
@@ -969,190 +967,6 @@ class FreyjaDevTools:
       else:
         parent._print('Some code quality checks failed!', 'error')
         sys.exit(1)
-
-    def completion(self, examples_only: bool = False) -> None:
-      """Test shell completion functionality, optionally just examples."""
-      parent = self.parent
-      parent._print('🔧 Testing shell completion functionality...', 'info')
-
-      # Set up environment
-      os.environ['PYTHONPATH'] = str(parent.project_src)
-      os.chdir(parent.project_src)
-
-      tests_passed: int = 0
-      tests_failed: int = 0
-      critical_failures: int = 0
-
-      def run_completion_test(
-        test_name: str, test_command: str, expected_pattern: str, critical: bool = False
-      ) -> bool:
-        nonlocal tests_passed, tests_failed, critical_failures
-
-        test_result: bool = False
-
-        if parent.verbose:
-          print(f'Running test: {test_name}')
-          print(f'Command: {test_command}')
-
-        result = parent._run_command(shlex.split(test_command), capture_output=True, timeout=10)
-
-        if isinstance(result, subprocess.CompletedProcess):
-          if result.returncode == 0 and (
-            expected_pattern in result.stdout or expected_pattern in result.stderr
-          ):
-            if parent.verbose:
-              parent._print(f'✅ {test_name}', 'success')
-            tests_passed += 1
-            test_result = True
-          else:
-            parent._print(f'❌ {test_name}', 'error')
-            if parent.verbose:
-              print(f'Expected pattern: {expected_pattern}')
-              if hasattr(result, 'stdout'):
-                print(f'Stdout: {result.stdout[:200]}')
-              if hasattr(result, 'stderr'):
-                print(f'Stderr: {result.stderr[:200]}')
-            tests_failed += 1
-            if critical:
-              critical_failures += 1
-        else:
-          # Timeout or other error
-          parent._print(f'⏰ {test_name} - TIMEOUT or ERROR', 'error')
-          tests_failed += 1
-          if critical:
-            critical_failures += 1
-
-        return test_result
-
-      # Test basic completion functionality
-      if not examples_only:
-        parent._print('Testing basic completion system...', 'info')
-
-        # Test help completion
-        run_completion_test(
-          'Help completion', 'python examples/cls_example --help', 'usage:', critical=True
-        )
-
-        # Test command completion
-        run_completion_test(
-          'Command completion',
-          'python examples/cls_example completion install',
-          'completion',
-          critical=False,
-        )
-
-      # Test examples completion
-      parent._print('Testing examples completion...', 'info')
-
-      # Test cls_example basic functionality
-      run_completion_test(
-        'cls_example help', 'python examples/cls_example --help', 'usage:', critical=True
-      )
-
-      # Test cls_example command execution
-      run_completion_test(
-        'cls_example command execution',
-        'python examples/cls_example file-operations--process-single --input-file test.txt --dry-run',
-        'test.txt',
-        critical=False,
-      )
-
-      # Test multi-class example
-      run_completion_test(
-        'multi_class_example help',
-        'python examples/multi_class_example --help',
-        'usage:',
-        critical=False,
-      )
-
-      # Print results
-      total_tests: int = tests_passed + tests_failed
-      parent._print(f'Completion test results: {tests_passed}/{total_tests} passed', 'info')
-
-      if critical_failures > 0:
-        parent._print(f'❌ {critical_failures} critical failures detected!', 'error')
-      elif tests_failed > 0:
-        parent._print(f'⚠️  {tests_failed} non-critical tests failed', 'warning')
-      else:
-        parent._print('All completion tests passed!', 'success')
-
-    def diagnose(self, include_env: bool = True, include_completion: bool = True) -> None:
-      """Run comprehensive diagnostic analysis for development issues."""
-      parent = self.parent
-      parent._print('🔍 Running comprehensive diagnostic analysis...', 'info')
-
-      if include_env:
-        parent._print('=== Environment Variable Analysis ===', 'info')
-        print(f'Current shell: {os.environ.get("SHELL", "Unknown")}')
-        print(f'Current PID: {os.getpid()}')
-        print()
-
-        # Check project-related environment variables
-        project_vars: dict[str, str] = {
-          k: v
-          for k, v in os.environ.items()
-          if parent.project_name.lower() in k.lower() or 'comp_' in k.lower()
-        }
-        if project_vars:
-          print(f'{parent.project_name.capitalize()} completion environment variables:')
-          for k, v in project_vars.items():
-            print(f'  {k}={v}')
-        else:
-          print(f'No {parent.project_name.capitalize()} completion environment variables found')
-        print()
-
-      if include_completion:
-        parent._print('=== Completion System Analysis ===', 'info')
-
-        # Test completion system availability
-        result = parent._run_command(
-          ['python', 'examples/cls_example', 'completion', '--help'], capture_output=True, timeout=5
-        )
-        if isinstance(result, subprocess.CompletedProcess) and result.returncode == 0:
-          parent._print('Completion system is available', 'success')
-        else:
-          parent._print('Completion system unavailable or broken', 'error')
-
-        # Test shell-specific completion
-        shell: str = os.environ.get('SHELL', '')
-        if 'bash' in shell:
-          parent._run_command(
-            f"complete -p | grep -i {parent.project_name} || echo 'No bash completion found'",
-            'Bash completion status:',
-          )
-        elif 'zsh' in shell:
-          parent._run_command(
-            f"compdef | grep -i {parent.project_name} || echo 'No zsh completion found'",
-            'Zsh completion status:',
-          )
-
-        print()
-
-      # Python environment check
-      parent._print('=== Python Environment ===', 'info')
-      parent._run_command('poetry run python --version', 'Python version:')
-      parent._run_command(
-        f'poetry run python -c \'import {parent.project_name}; print(f"{parent.project_name.capitalize()} module: {{{parent.project_name}.__file__}}")\'',
-        f'{parent.project_name.capitalize()} module location:',
-      )
-
-      # Project structure check
-      parent._print('=== Project Structure ===', 'info')
-      important_files: list[str] = [
-        'pyproject.toml',
-        f'{parent.project_name}/__init__.py',
-        'examples/cls_example',
-        'examples/multi_class_example',
-      ]
-
-      for file_path in important_files:
-        full_path: Path = Path(parent.project_src) / file_path
-        if full_path.exists():
-          parent._print(f'✅ {file_path} exists', 'success')
-        else:
-          parent._print(f'❌ {file_path} missing', 'error')
-
-      parent._print('Diagnostic analysis complete!', 'success')
 
   class Test:
     """Testing operations."""
@@ -1191,7 +1005,7 @@ class FreyjaDevTools:
 
     @staticmethod
     def _passed(result: bool | CompletedProcess) -> bool:
-      """Whether a command succeeded. A finished process is truthy whatever its exit code, so ask."""
+      """Whether a command succeeded: a finished process is truthy whatever its exit code."""
       return result is True or (isinstance(result, CompletedProcess) and result.returncode == 0)
 
     def _pytest_options(self, test_mark: str | None = None) -> list[str]:
@@ -1219,7 +1033,7 @@ class FreyjaDevTools:
       )
 
     def _project_python(self) -> str:
-      """Name the poetry interpreter by its version, or '?' when there is none to ask (a dry run)."""
+      """Name the poetry interpreter by its version, or '?' with none to ask (a dry run)."""
       found = self.parent._run_command(
         ['poetry', 'run', 'python', '-c', 'import platform; print(platform.python_version())'],
         capture_output=True,
@@ -1251,7 +1065,7 @@ class FreyjaDevTools:
       return version
 
     def _latest_venv(self, version: str) -> Path | None:
-      """Return the 3.14 venv's python, rebuilt when it runs another version, with the project in it.
+      """Return the 3.14 venv's python, rebuilt if it runs another version, with the project in it.
       Reinstalls only when the venv is new or ``pyproject.toml`` changed since the last install,
       which saves a few seconds a run and costs one stamp file.
       """

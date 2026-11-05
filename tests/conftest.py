@@ -1,10 +1,14 @@
-"""Shared fixtures: one process-wide singleton, wiped clean around every test, and a fast switch."""
+"""Shared fixtures: a singleton wiped clean around every test, a package writer, a fast switch."""
 
 import sys
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
+
 from idunn import Idunn
+
+from _support import PackageWriter
 
 
 @pytest.fixture(autouse=True)
@@ -22,3 +26,9 @@ def eager_switching() -> Iterator[None]:
   sys.setswitchinterval(1e-6)
   yield
   sys.setswitchinterval(previous)
+
+
+@pytest.fixture
+def writer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> PackageWriter:
+  """Write throwaway packages under ``tmp_path``, on a ``sys.path`` entry undone after the test."""
+  return PackageWriter(tmp_path=tmp_path, monkeypatch=monkeypatch)

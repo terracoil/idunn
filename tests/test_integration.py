@@ -10,6 +10,7 @@ from collections.abc import Iterator
 from types import ModuleType
 
 import pytest
+
 from idunn import AdapterNotFoundError, Idunn, ReportMap
 
 from _support import PackageWriter

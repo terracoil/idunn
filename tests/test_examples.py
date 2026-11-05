@@ -18,6 +18,7 @@ from itertools import takewhile
 from pathlib import Path
 
 import pytest
+
 from idunn import Idunn, ReportMap
 
 pytestmark = pytest.mark.integration

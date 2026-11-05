@@ -42,8 +42,9 @@ from idunn import IdunnError  # base of the exception family
 from idunn import ReportMap  # the TypedDict autodiscover() and bootstrap() return
 ```
 
-That, plus the six `IdunnError` subclasses, is the entire surface. Registration, selection and
-construction happen behind the container, where business code cannot get attached to them.
+That, plus the six `IdunnError` subclasses, is everything an application imports; its tests
+borrow one more name, `Harness`, from `idunn.testing`. Registration, selection and construction
+happen behind the container, where business code cannot get attached to them.
 
 ---
 

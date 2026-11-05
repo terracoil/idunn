@@ -4,13 +4,13 @@ thread's discovery can deadlock, so these pin both the yes cases and the no case
 """
 
 import importlib
-from pathlib import Path
-from threading import Thread
+import inspect
 
 import pytest
+
 from idunn.util import ImportContext
 
-from _support import ImportingCall, PackageWriter
+from _support import ImportingCall, PackageWriter, Racer
 
 
 def test_inactive_in_a_plain_call() -> None:
@@ -18,17 +18,11 @@ def test_inactive_in_a_plain_call() -> None:
 
 
 def test_inactive_in_a_thread_target() -> None:
-  seen: list[bool] = []
-  thread = Thread(target=lambda: seen.append(ImportContext.active()), daemon=True)
-
-  thread.start()
-  thread.join(timeout=10)
-
-  assert seen == [False]
+  assert Racer(timeout=10).call(ImportContext.active) is False
 
 
-def test_active_in_a_module_body(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-  PackageWriter(tmp_path=tmp_path, monkeypatch=monkeypatch).module(
+def test_active_in_a_module_body(writer: PackageWriter) -> None:
+  writer.module(
     'import_context_body',
     """
     from idunn.util import ImportContext
@@ -48,10 +42,13 @@ def test_active_in_a_loaders_exec_module_with_no_module_body_frame() -> None:
 
 
 def test_active_in_a_thread_that_is_importing() -> None:
-  seen: list[object] = []
   with ImportingCall('import_context_thread', ImportContext.active).installed() as call:
-    thread = Thread(target=lambda: seen.append(call.run()), daemon=True)
-    thread.start()
-    thread.join(timeout=10)
+    assert Racer(timeout=10).call(call.run) is True
 
-  assert seen == [True]
+
+def test_active_when_the_interpreter_has_no_frames_to_walk(monkeypatch: pytest.MonkeyPatch) -> None:
+  # The one monkeypatch there is: a frameless interpreter cannot be had any other way. Saying
+  # yes costs a spare discovery; saying no could cost the process, so yes it is.
+  monkeypatch.setattr(inspect, 'currentframe', lambda: None)
+
+  assert ImportContext.active() is True

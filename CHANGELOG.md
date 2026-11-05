@@ -5,7 +5,7 @@ Notable changes to Idunn, newest first. The format follows
 [Semantic Versioning](https://semver.org/), which is why a release that tightens this many rules is
 2.0 and not 1.1. Releases up to 1.0.1 came before this file; their story lives in the git tags.
 
-## 2.0.0 - 2026-11-03
+## 2.0.0 - 2026-11-05
 
 Idunn grows up without growing out. The public surface is still three decorators, `Idunn`,
 `LifecycleEnum`, `ReportMap` and seven exceptions, plus one test helper in its own package. The
@@ -30,7 +30,7 @@ parameters. The list below covers everything else that might bite.
    was ignored, so one of the two declarations was quietly a lie.
 4. **More `@Invert` mistakes fail at decoration:**
    - an unknown map or `keys` name raises `TypeError` (it was `KeyError`, or silently ignored);
-   - a key that is not a `str` raises `TypeError`;
+   - a key that is not a `str` raises `TypeError` (a `StrEnum` member is a `str`, and works);
    - a map value that is not a port raises `InvalidPortError` (it was the same error but only at
      the first call, an `AttributeError` for a non-class, or a silent default when the parameter
      had one);
@@ -53,7 +53,8 @@ parameters. The list below covers everything else that might bite.
 9. **Error messages name things as `module.QualName`**, and anything without a qualified name
    (parameterized aliases such as `Repo[User]` included) by its `repr`. Message text changed
    throughout, so code that matches on it must update. `Port(5)` and `Adapter(5)` raise
-   `InvalidPortError` instead of an `AttributeError` from the message itself.
+   `InvalidPortError` instead of an `AttributeError` from the message itself, and so does
+   `Port(SomeProtocol[int])` instead of a `TypeError` from `issubclass`.
 10. **A `bootstrap` made while a module is being imported no longer waits** for another thread's
     discovery. It runs its own and returns its own run's report; every other caller gets the
     cached, merged one. One consequence: when two roots bootstrap each other from two threads,
@@ -68,6 +69,11 @@ parameters. The list below covers everything else that might bite.
     and import-time runs included. A class defined after a re-entrant call is now listed. Before,
     it was registered but missing from the report, so `describe()` and the report disagreed and
     the report was the one telling fibs.
+13. **Adapter keys and environment names are type-checked.** `@Adapter(key=...)` with a key that
+    is not a `str` raises `TypeError`, the rule `@Invert(keys=...)` and `Harness.override(key=...)`
+    apply too. Before, it registered an adapter nothing could ever ask for. An environment name
+    that is not a `str` (`reset(environment=5)`, `@Adapter(envs={5})`) raises `ValueError`, as a
+    malformed one always did, instead of an `AttributeError` about `strip`.
 
 ### Added
 
@@ -75,10 +81,25 @@ parameters. The list below covers everything else that might bite.
   `install(*adapters)` registers adapters as one atomic batch, and `override(port, instance, *,
   key=None)` makes a port resolve to a stand-in ahead of any adapter, in any environment. Both are
   context managers and decorators, and on exit they restore registrations, singletons, overrides,
-  `bootstrap` reports and the environment. `reset()` clears overrides too.
+  `bootstrap` reports and the environment. `reset()` clears overrides too. Blocks unwind last in,
+  first out, and a hand-driven outer block exiting before an inner one raises `RuntimeError`
+  instead of leaking: it restores nothing, and the inner block's exit puts back what the outer one
+  found.
 - **`@Invert()` on plain functions, methods and static methods.** The ports arrive as keyword
   arguments at call time and nothing is assigned anywhere. Every other `@Invert` rule applies
   unchanged.
+- **`@Invert(bootstrap='my_lib')`, so a library wires itself on first use** without an
+  `Idunn().bootstrap` call in every entry point. A call that leaves at least one port parameter to
+  injection, an optional one included, first runs the public `Idunn().bootstrap('my_lib')`: after
+  the positional check and the plan, before anything is injected or assigned, once per call at
+  most. So it is cached per root, shared by concurrent first calls and safe at import time, and a
+  failure propagates and is retried by the next call. A call that brings every port discovers
+  nothing, and the resolver, which passes an adapter constructor every port, never sets one off.
+  A root that is not a non-empty `str`, or `bootstrap=` on a function with no port parameters,
+  raises `TypeError`, and a `str` that is not a dotted run of identifiers (`'.relative'`,
+  `'my lib'`, `'a..b'`) raises `ValueError`, judged from the spelling, with nothing imported or
+  looked up. The `mead` library in the complex examples now wires itself this way, and a
+  `bootstrap` call for a cached root is now one dictionary read, with no discovery callable built.
 - **Forward and self references** in `@Invert` constructors and functions (`parent: Node | None`
   inside `Node`), under `from __future__ import annotations` or on 3.14 without it. Shape checks
   still run at decoration; the few that need the hints wait for the first call.
@@ -101,9 +122,19 @@ parameters. The list below covers everything else that might bite.
   (`MissingTypeHintError`, a positional-only port) anywhere below a singleton's first build, is now
   reported before any constructor in that graph runs. Before, `TRANSIENT` dependencies earlier in
   the plan were built first. The exception types are the same; only the timing moved.
+- **Enum keys are kept as their plain value.** `@Adapter(key=...)`, `@Invert(keys=...)` and
+  `Harness.override(key=...)` store a `StrEnum` or `(str, Enum)` member as the string it stands
+  for, so `describe()` and error messages print `key='gold'` rather than
+  `key=<Grade.GOLD: 'gold'>`. Matching is unchanged: the member and its string find the same
+  adapter, as before.
 - **A positional-only port on an adapter constructor** raises `TypeError` naming
   `module.Adapter.param` when the adapter is first built, rather than Python's own complaint about
   a positional-only argument passed by keyword.
+- **An adapter constructor hint that does not resolve** (a port defined inside a function under
+  `from __future__ import annotations`, say) raises `MissingTypeHintError` naming the adapter and
+  the missing name, chained from the `NameError`, instead of that bare `NameError` from deep inside
+  `typing`. Nothing is cached, so the build succeeds once the name exists. An `@Invert` consumer
+  still waits for its own forward references, as before.
 
 ### Fixed
 
@@ -122,7 +153,20 @@ parameters. The list below covers everything else that might bite.
   when tests fail; they used to exit 0 and announce success regardless, which is optimism rather
   than testing. `test all` also runs the suite a second time, on the newest pyenv CPython 3.14 in
   `tmp/venv-3.14`, because two `@Invert` contract tests only mean anything under PEP 649.
-- `poetry.lock` and `CLAUDE.md` are committed. CI is split into a `quality` job, run once on
+  `pytest-xdist` joined the dev group, so `test --parallel` (`-n auto`) runs on both. So did
+  `pytest-timeout`, set to 120 seconds a test: a hang that never waits on anything, which no
+  in-test deadline can catch, now fails its test instead of the afternoon. `test lint` is the one
+  lint command, Ruff's linter and formatter and then mypy, and `test all` runs it first. It replaces
+  `build lint` and `quality lint`, so the `quality` group is gone; its `completion` and `diagnose`
+  commands drove examples that no longer exist. So is the unread `bin/requirements.txt`. Every
+  command now runs from the repository root, so linting type-checks again and the "Error getting
+  proj_root" line no longer greets every run, and a step that fails now counts as failed: the old
+  `quality lint` passed a tree Ruff had just refused, and `build`, `project commit` and `project
+  autotag` carried on past a failed step. Devtool itself works from any directory, reading
+  `pyproject.toml` and cleaning at the repository root it finds beside itself, and `build clean`
+  empties `tmp/` but spares the test venvs (`tmp/venv-*`) and `tmp/.gitkeep`, so a clean no longer
+  costs a pyenv rebuild.
+- `poetry.lock` is committed. CI is split into a `quality` job, run once on
   3.13.16 (lock check, format, lint, strict mypy), and a `test` job on 3.11, 3.12, 3.13.16 and 3.14.
 - The mypy cache joins Pytest's and Ruff's under the git-ignored `tmp/`. The unused `pillow` and
   `poetry-dynamic-versioning` dev dependencies and the redundant license classifier are gone. The
@@ -130,7 +174,10 @@ parameters. The list below covers everything else that might bite.
 - `examples/my_app` became four examples, `examples/{classy,functional}/{simple,complex}`, one
   pair with consumer classes and one with consumer functions. The suite runs every one and checks
   each line it prints, and the README's "Normal usage" listings are pinned to
-  `examples/classy/simple`, so neither can drift from the code.
+  `examples/classy/simple`, so neither can drift from the code. Each example's docstring declares
+  its `Environments:`, and a missing or stray `expected*.txt` fails, as does a class that moves
+  module, since `Registers:` names classes relative to the example package.
+- The README's links are absolute GitHub URLs, so they still work where PyPI renders it.
 
 ### Internal
 
@@ -138,11 +185,20 @@ None of this was ever public; it is listed for anyone who reached in anyway.
 
 - **Removed:** `RegistrationKey`, `AdapterMetadata.order`, the mapper's selection memo,
   `Idunn._has`, `DecoratorSupport.extract_port_parameters`, `InversionResolver.resolve` and its
-  four construction helpers, and `AutoDiscovery`'s module-object root (`Idunn().autodiscover`
-  always took a dotted name).
+  four construction helpers, `AutoDiscovery`'s module-object root (`Idunn().autodiscover`
+  always took a dotted name), and the mapper's `register_port`, `register_adapter`, `ports` and
+  `select`: everything registers through `register_batch`, and the resolver now owns the selection
+  rule and its `AdapterNotFoundError`.
+- **The adapter stamp** is the `AdapterDeclaration` itself, under `__idunn_adapter__`. The boolean
+  `__idunn_adapter__` flag and the separate `__idunn_adapter_declaration__` attribute are gone,
+  and discovery and registration both read the stamp from the class's own `__dict__`, so an
+  undecorated subclass of an adapter is no adapter to either.
 - **New:** `Catalog`, `EngineSnapshot`, `FunctionShape`, `InvertDeclaration` and `ParameterPlan`
   in `domain`; `ConstructorPlanner`, `LazyPlan`, `BootstrapGate`, `BootstrapFlight`,
-  `ReportMerger` and `ConstructionStack` in `internal`; `ImportContext` and `KeyedLocks` in `util`.
+  `ReportMerger`, `ConstructionStack` and the `SingletonGeneration` and `BootstrapGeneration`
+  named tuples in `internal`; `ImportContext` and `KeyedLocks` in `util`.
+- `AutoDiscovery` takes its mapper once, at construction: the facade builds one beside the
+  resolver, and `reset()` empties the mapper it shares rather than replacing either.
 - `@Invert` reaches the engine through one private door, `Idunn()._inject(parameter)`, and
   `Harness` through four more (`_snapshot`, `_restore`, `_install`, `_override`). The mapper,
   resolver and bootstrap gate swap whole generations on `reset()` instead of emptying them, so a

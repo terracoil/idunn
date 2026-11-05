@@ -10,7 +10,8 @@ import re
 from typing import Protocol, TypeVar
 
 import pytest
-from idunn import Adapter, InvalidAdapterError, InvalidPortError, Invert, Port
+
+from idunn import Adapter, InvalidAdapterError, InvalidPortError, Invert, LifecycleEnum, Port
 from idunn.domain import AdapterDeclaration
 from idunn.internal import PortRegistry
 
@@ -88,8 +89,8 @@ def test_stacked_adapter_raises_and_keeps_the_first_declaration() -> None:
     Adapter(BasketPort, key='outer')(GoldenBasket)
 
   # Refused before any stamp, so the original declaration is exactly as it was.
-  declaration: AdapterDeclaration = vars(GoldenBasket)['__idunn_adapter_declaration__']
-  assert declaration.key is None
+  declaration: AdapterDeclaration | None = AdapterDeclaration.of(GoldenBasket)
+  assert declaration is not None and declaration.key is None
 
 
 def test_stacked_adapter_written_as_two_decorators_raises() -> None:
@@ -113,9 +114,45 @@ def test_redecorated_subclass_wears_its_own_badge() -> None:
     def take(self) -> str:
       return 'green'
 
-  parent: AdapterDeclaration = vars(GoldenBasket)['__idunn_adapter_declaration__']
-  child: AdapterDeclaration = vars(GreenBasket)['__idunn_adapter_declaration__']
+  parent: AdapterDeclaration | None = AdapterDeclaration.of(GoldenBasket)
+  child: AdapterDeclaration | None = AdapterDeclaration.of(GreenBasket)
+  assert parent is not None and child is not None
   assert (parent.key, child.key) == (None, 'green')
+
+
+def test_an_undecorated_subclass_inherits_the_attribute_but_not_the_badge() -> None:
+  @Adapter(BasketPort)
+  class GoldenBasket(BasketPort):
+    def take(self) -> str:
+      return 'golden'
+
+  class GildedBasket(GoldenBasket):
+    pass
+
+  assert AdapterDeclaration.of(GoldenBasket) is not None
+  assert AdapterDeclaration.of(GildedBasket) is None
+
+
+def test_adapter_key_that_is_not_a_str_raises_type_error() -> None:
+  # @Invert(keys=...) only ever asks with a str, so an int key labels an adapter nobody reaches.
+  with pytest.raises(TypeError, match=re.escape(f'{__name__}.BasketPort must be a str: 5')):
+    Adapter(BasketPort, key=5)  # type: ignore[arg-type]
+
+
+def test_an_unknown_lifecycle_string_raises_value_error() -> None:
+  with pytest.raises(ValueError, match="'forever' is not a valid LifecycleEnum"):
+    Adapter(BasketPort, lifecycle='forever')
+
+
+@pytest.mark.parametrize('lifecycle', ['singleton', 'transient'])
+def test_lifecycle_strings_mean_their_enum_members(lifecycle: str) -> None:
+  @Adapter(BasketPort, lifecycle=lifecycle)
+  class GoldenBasket(BasketPort):
+    def take(self) -> str:
+      return 'golden'
+
+  declaration: AdapterDeclaration | None = AdapterDeclaration.of(GoldenBasket)
+  assert declaration is not None and declaration.lifecycle is LifecycleEnum(lifecycle)
 
 
 def test_bare_invert_raises_type_error_naming_the_constructor() -> None:

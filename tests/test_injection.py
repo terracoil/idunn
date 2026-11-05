@@ -3,9 +3,10 @@ Adapter constructors decorated with ``@Invert`` get their own keys and map honou
 undecorated ones resolve unkeyed, and each adapter's plan is worked out once until ``clear()``.
 """
 
-from typing import Any, Protocol, cast
+from typing import Protocol, cast
 
 import pytest
+
 from idunn import (
   Adapter,
   AdapterNotFoundError,
@@ -271,8 +272,49 @@ def test_duplicate_unkeyed_adapters_in_overlapping_envs_raises() -> None:
 
   table.register_adapter(StripePaymentAdapter)
 
-  with pytest.raises(InvalidAdapterError):
+  with pytest.raises(InvalidAdapterError, match=r'StripePaymentAdapter and .*BraintreePayment'):
     table.register_adapter(BraintreePaymentAdapter)
+
+
+@pytest.mark.parametrize('order', ['agnostic-first', 'scoped-first'])
+def test_an_env_agnostic_adapter_collides_with_a_scoped_one(order: str) -> None:
+  # Agnostic means active everywhere, prod included: letting both in would make prod a guess.
+  @Port
+  class PaymentPort(Protocol):
+    pass
+
+  @Adapter(PaymentPort)
+  class AnywherePayment(PaymentPort):
+    pass
+
+  @Adapter(PaymentPort, envs={'prod'})
+  class ProdPayment(PaymentPort):
+    pass
+
+  pair = (
+    (AnywherePayment, ProdPayment) if order == 'agnostic-first' else (ProdPayment, AnywherePayment)
+  )
+
+  with pytest.raises(InvalidAdapterError, match='overlapping environments'):
+    Wiring.of(*pair)
+
+
+def test_a_missing_adapter_names_its_port_key_and_environment() -> None:
+  table = Wiring(environment='prod')
+
+  @Port
+  class PaymentPort(Protocol):
+    pass
+
+  local = f'{__name__}.test_a_missing_adapter_names_its_port_key_and_environment.<locals>'
+
+  with pytest.raises(AdapterNotFoundError) as unkeyed:
+    table.resolve(PaymentPort)
+  with pytest.raises(AdapterNotFoundError) as keyed:
+    table.resolve(PaymentPort, key='nope')
+
+  assert str(unkeyed.value).endswith(f"port {local}.PaymentPort in 'prod'.")
+  assert str(keyed.value).endswith(f"port {local}.PaymentPort with key 'nope' in 'prod'.")
 
 
 def test_invalid_adapter_does_not_satisfy_port() -> None:
@@ -428,6 +470,33 @@ def test_constructor_optional_dependency_falls_back_when_absent() -> None:
   assert table.resolve(ServicePort).run() == 'no-sidecar'
 
 
+def test_an_adapter_port_with_a_non_none_default_gets_that_default_when_absent() -> None:
+  # Any default makes a port optional, not only None: the default is what the adapter asked for.
+  @Port
+  class SidecarPort(Protocol):
+    def ping(self) -> str: ...
+
+  class SpareSidecar:
+    def ping(self) -> str:
+      return 'spare'
+
+  spare = SpareSidecar()
+
+  @Port
+  class ServicePort(Protocol):
+    def run(self) -> str: ...
+
+  @Adapter(ServicePort)
+  class ServiceAdapter(ServicePort):
+    def __init__(self, sidecar: SidecarPort = spare) -> None:
+      self.sidecar: SidecarPort = sidecar
+
+    def run(self) -> str:
+      return self.sidecar.ping()
+
+  assert Wiring.of(ServiceAdapter).resolve(ServicePort).sidecar is spare
+
+
 def test_constructor_optional_dependency_injects_when_present() -> None:
   table = Wiring()
 
@@ -488,7 +557,7 @@ def test_adapter_subclassing_its_port_is_not_itself_a_port() -> None:
     def hello(self) -> str:
       return 'hi'
 
-  with pytest.raises(InvalidPortError):
+  with pytest.raises(InvalidPortError, match=r'not marked with @Port: .*\.GreeterAdapter$'):
     Adapter(GreeterAdapter)
 
 
@@ -502,7 +571,7 @@ def test_resolving_an_undecorated_protocol_subclass_of_a_port_is_rejected() -> N
   class LouderGreeterPort(GreeterPort, Protocol):
     def shout(self) -> str: ...
 
-  with pytest.raises(InvalidPortError):
+  with pytest.raises(InvalidPortError, match=r'not marked with @Port: .*\.LouderGreeterPort$'):
     table.resolve(LouderGreeterPort)
 
 
@@ -553,18 +622,6 @@ class SmsNotifier:
     return 'sms'
 
 
-class Engine:
-  """Builds a :class:`Wiring` with adapters already registered."""
-
-  @staticmethod
-  def of(*adapters: type[Any]) -> Wiring:
-    """Return a fresh engine with ``adapters`` registered."""
-    table = Wiring()
-    for adapter in adapters:
-      table.register_adapter(adapter)
-    return table
-
-
 def test_an_adapter_constructor_keyed_with_invert_gets_its_keyed_dependency() -> None:
   @Adapter(ReminderPort)
   class Reminder:
@@ -578,7 +635,7 @@ def test_an_adapter_constructor_keyed_with_invert_gets_its_keyed_dependency() ->
       return self.notifier.send()
 
   # 1.x handed this constructor the unkeyed email adapter: wrong, and silent about it.
-  table = Engine.of(EmailNotifier, SmsNotifier, Reminder)
+  table = Wiring.of(EmailNotifier, SmsNotifier, Reminder)
 
   assert table.resolve(ReminderPort).remind() == 'sms'
 
@@ -593,7 +650,7 @@ def test_an_adapter_constructor_with_an_explicit_map_gets_its_dependency() -> No
     def remind(self) -> str:
       return cast(NotifierPort, self._notifier).send()
 
-  table = Engine.of(EmailNotifier, Reminder)
+  table = Wiring.of(EmailNotifier, Reminder)
 
   assert table.resolve(ReminderPort).remind() == 'email'
 
@@ -616,8 +673,8 @@ def test_plain_invert_and_undecorated_adapter_constructors_resolve_unkeyed() -> 
     def remind(self) -> str:
       return self._notifier.send()
 
-  keyed_only = Engine.of(SmsNotifier, PlainReminder, BareReminder)
-  both = Engine.of(SmsNotifier, EmailNotifier, PlainReminder, BareReminder)
+  keyed_only = Wiring.of(SmsNotifier, PlainReminder, BareReminder)
+  both = Wiring.of(SmsNotifier, EmailNotifier, PlainReminder, BareReminder)
 
   # A keyed adapter never sneaks into a constructor that did not ask for it by name.
   with pytest.raises(AdapterNotFoundError):
@@ -648,7 +705,7 @@ def test_a_cycle_through_a_keyed_dependency_is_still_a_cycle() -> None:
     def __init__(self, *, egg: EggPort) -> None:
       pass
 
-  table = Engine.of(Egg, Hen)
+  table = Wiring.of(Egg, Hen)
 
   with pytest.raises(InjectionCycleError) as cycle:
     table.resolve(HenPort)
@@ -658,7 +715,7 @@ def test_a_cycle_through_a_keyed_dependency_is_still_a_cycle() -> None:
 
 
 def test_an_adapter_plan_is_made_once_and_forgotten_on_clear() -> None:
-  table = Engine.of(EmailNotifier)
+  table = Wiring.of(EmailNotifier)
 
   table.resolve(NotifierPort)
   plan = table.resolver._plans[EmailNotifier]
@@ -678,7 +735,7 @@ def test_a_positional_only_port_on_an_adapter_raises_type_error() -> None:
     def remind(self) -> str:
       return self._notifier.send()
 
-  table = Engine.of(EmailNotifier, Reminder)
+  table = Wiring.of(EmailNotifier, Reminder)
 
   with pytest.raises(TypeError, match=r'Reminder\.notifier is a positional-only port'):
     table.resolve(ReminderPort)

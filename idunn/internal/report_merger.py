@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from itertools import chain
+from typing import Literal, TypeAlias
 
 from idunn.domain import ReportMap
+
+# The report's tuple-of-names fields: a Literal, since a TypedDict is read by literal key only.
+Field: TypeAlias = Literal[
+  'imported_modules', 'skipped_modules', 'registered_ports', 'registered_adapters'
+]
 
 
 class ReportMerger:
@@ -23,20 +29,16 @@ class ReportMerger:
     not skipped, it was merely early. ``registered_*`` keep run-finish order. There is always at
     least one report, the run that just finished, so the root name comes from the first.
     """
-    imported: frozenset[str] = frozenset(
-      chain.from_iterable(report['imported_modules'] for report in reports)
-    )
-    skipped: frozenset[str] = frozenset(
-      chain.from_iterable(report['skipped_modules'] for report in reports)
-    )
+    imported: frozenset[str] = frozenset(ReportMerger._joined(reports, 'imported_modules'))
+    skipped: frozenset[str] = frozenset(ReportMerger._joined(reports, 'skipped_modules'))
     return {
       'root_package': reports[0]['root_package'],
       'imported_modules': tuple(sorted(imported)),
       'skipped_modules': tuple(sorted(skipped - imported)),
-      'registered_ports': tuple(
-        chain.from_iterable(report['registered_ports'] for report in reports)
-      ),
-      'registered_adapters': tuple(
-        chain.from_iterable(report['registered_adapters'] for report in reports)
-      ),
+      'registered_ports': tuple(ReportMerger._joined(reports, 'registered_ports')),
+      'registered_adapters': tuple(ReportMerger._joined(reports, 'registered_adapters')),
     }
+
+  @staticmethod
+  def _joined(reports: Sequence[ReportMap], field: Field) -> Iterator[str]:
+    return chain.from_iterable(report[field] for report in reports)

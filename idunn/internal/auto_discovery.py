@@ -8,9 +8,9 @@ from collections.abc import Iterable
 from fnmatch import fnmatchcase
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, Final
 
-from idunn.domain import DiscoveryError, ReportMap
+from idunn.domain import AdapterDeclaration, DiscoveryError, ReportMap
 from idunn.util import QualifiedName
 
 from .inversion_mapper import InversionMapper
@@ -27,10 +27,12 @@ class AutoDiscovery:
 
   # Matched against each dotted part *below* the root, so a test package named as the root is
   # still scanned on purpose. User patterns add to these; they never replace them.
-  DEFAULT_EXCLUDE: frozenset[str] = frozenset({'tests', 'test', 'test_*', '*_test', 'conftest'})
+  DEFAULT_EXCLUDE: Final[frozenset[str]] = frozenset(
+    {'tests', 'test', 'test_*', '*_test', 'conftest'}
+  )
 
   # Importing ``pkg.__main__`` runs the package's CLI, so it is never a discovery target.
-  NEVER_IMPORTED: frozenset[str] = frozenset({'__main__'})
+  NEVER_IMPORTED: Final[frozenset[str]] = frozenset({'__main__'})
 
   def autodiscover(
     self,
@@ -46,8 +48,10 @@ class AutoDiscovery:
     configuration error, not an unlucky import.
     """
     # Outside the strict handling: a root that will not import raises its own error regardless.
-    root_module = importlib.import_module(root_package)
-    module_names = self._module_names(root_module=root_module, patterns=self._patterns(exclude))
+    root_module: ModuleType = importlib.import_module(root_package)
+    module_names: tuple[str, ...] = self._module_names(
+      root_module=root_module, patterns=self._patterns(exclude)
+    )
     modules, skipped = self._import_modules(module_names=module_names, strict=strict)
     candidates: tuple[type[Any], ...] = tuple(
       candidate for module in modules for candidate in self._defined_classes(module=module)
@@ -88,14 +92,14 @@ class AutoDiscovery:
         modules.append(self._load(module_name=module_name))
       except Exception as exc:  # any import failure counts; SystemExit still gets through
         if strict:
-          message = f'Idunn failed to import module {module_name!r}: {exc}'
+          message: str = f'Idunn failed to import module {module_name!r}: {exc}'
           raise DiscoveryError(message) from exc
         skipped.append(module_name)
     return tuple(modules), tuple(skipped)
 
   def _is_adapter(self, candidate: type[Any]) -> bool:
-    # Own __dict__, not getattr: a subclass inherits the flag without wearing the decorator.
-    return '__idunn_adapter__' in candidate.__dict__
+    # The mapper's own test, so a class discovery skips is one Harness.install refuses.
+    return AdapterDeclaration.of(candidate) is not None
 
   def _is_excluded(self, *, relative_parts: tuple[str, ...], patterns: frozenset[str]) -> bool:
     return any(
@@ -110,15 +114,20 @@ class AutoDiscovery:
     # second copy whose classes the running script never sees, so scan the running module.
     running: ModuleType | None = sys.modules.get('__main__')
     running_name: str | None = getattr(getattr(running, '__spec__', None), 'name', None)
-    is_running: bool = running is not None and running_name == module_name
-    return running if is_running and running is not None else importlib.import_module(module_name)
+    return (
+      running
+      if running is not None and running_name == module_name
+      else importlib.import_module(module_name)
+    )
 
   def _module_names(self, *, root_module: ModuleType, patterns: frozenset[str]) -> tuple[str, ...]:
     # Every .py under every __path__ entry counts, directories without __init__.py included.
     names: set[str] = {root_module.__name__}
     for path_entry in self._path_entries(root_module=root_module):
       for python_file in path_entry.rglob('*.py'):
-        relative_parts = self._relative_parts(root_path=path_entry, python_file=python_file)
+        relative_parts: tuple[str, ...] = self._relative_parts(
+          root_path=path_entry, python_file=python_file
+        )
         if relative_parts and not self._is_excluded(
           relative_parts=relative_parts, patterns=patterns
         ):
@@ -130,7 +139,7 @@ class AutoDiscovery:
     entries: tuple[Path, ...] = tuple(Path(entry) for entry in getattr(root_module, '__path__', ()))
     unscannable: list[str] = [str(entry) for entry in entries if not entry.is_dir()]
     if unscannable:
-      message = (
+      message: str = (
         f'Idunn cannot scan package {root_module.__name__!r}: no directory at '
         f'{", ".join(unscannable)} (a zip, egg or frozen bundle?). Discovery reads the file '
         'system, so install the package unpacked.'
@@ -143,5 +152,5 @@ class AutoDiscovery:
     return self.DEFAULT_EXCLUDE | frozenset(extra)
 
   def _relative_parts(self, *, root_path: Path, python_file: Path) -> tuple[str, ...]:
-    parts = python_file.relative_to(root_path).with_suffix('').parts
+    parts: tuple[str, ...] = python_file.relative_to(root_path).with_suffix('').parts
     return parts[:-1] if parts[-1] == '__init__' else parts

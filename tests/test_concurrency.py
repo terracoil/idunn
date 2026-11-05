@@ -12,6 +12,7 @@ from functools import partial
 from typing import Protocol
 
 import pytest
+
 from idunn import (
   Adapter,
   AdapterNotFoundError,
@@ -19,6 +20,7 @@ from idunn import (
   InjectionCycleError,
   Invert,
   LifecycleEnum,
+  MissingTypeHintError,
   Port,
 )
 from idunn.testing import Harness
@@ -181,18 +183,15 @@ def test_a_singleton_constructor_may_join_a_worker_that_builds_another_singleton
   @Adapter(OuterPort, lifecycle=SINGLETON)
   class Outer:
     def __init__(self) -> None:
-      helpers: list[Helper] = []
-      worker = threading.Thread(target=lambda: helpers.append(Helper()), daemon=True)
-      worker.start()
-      worker.join(timeout=5)
-      self.finished: bool = not worker.is_alive()
-      self.inner: object = helpers[0].inner if helpers else None  # type: ignore[attr-defined]
+      self.worker: Racer = Racer(timeout=5)
+      self.worker.start('helper', Helper)
+      self.worker.join()
 
   with Harness.install(Inner, Outer):
     outer = Resolve.port(OuterPort)
 
-    assert outer.finished
-    assert outer.inner is Resolve.port(InnerPort)
+    assert outer.worker.errors == []
+    assert outer.worker.results['helper'].inner is Resolve.port(InnerPort)
 
 
 def test_a_singleton_constructor_may_build_another_singleton_on_its_own_thread() -> None:
@@ -240,20 +239,19 @@ def test_a_reset_racing_a_singleton_build_keeps_the_stale_instance_out_of_the_ne
       proceed.wait(timeout=5)
       built.append(self)
 
-  stale: list[object] = []
-  builder = threading.Thread(target=lambda: stale.append(Resolve.port(SlowPort)), daemon=True)
+  builder = Racer(timeout=5)
   with Harness.install(Slow):
-    builder.start()
+    builder.start('builder', lambda: Resolve.port(SlowPort))
     assert started.wait(timeout=5)
     Idunn().reset(environment='local')  # mid-build: the builder captured the old generation
     with Harness.install(Slow):
       proceed.set()
-      builder.join(timeout=5)
+      builder.join()
       fresh = Resolve.port(SlowPort)
       assert Resolve.port(SlowPort) is fresh
 
-  assert not builder.is_alive()
-  assert stale and fresh is not stale[0]
+  assert builder.errors == []
+  assert fresh is not builder.results['builder']
   assert len(built) == 2
 
 
@@ -531,6 +529,41 @@ class TestCycleWalk:
     assert built == []
     assert local.resolve(TowerPort).clock is None
 
+  def test_an_optional_port_with_nothing_active_does_not_halt_the_walk(self) -> None:
+    # The build hands the absent port its None and carries on to the next parameter, so the walk
+    # must carry on too. A walk that stopped there would leave the loop behind it to the build.
+    built: list[str] = []
+
+    @Port
+    class AbsentPort(Protocol):
+      pass
+
+    @Port
+    class SeedPort(Protocol):
+      pass
+
+    @Port
+    class TreePort(Protocol):
+      pass
+
+    @Adapter(SeedPort, lifecycle=SINGLETON)
+    class Seed:
+      def __init__(self, tally: TallyPort, absent: AbsentPort | None, tree: TreePort) -> None:
+        pass
+
+    @Adapter(TreePort, lifecycle=SINGLETON)
+    class Tree:
+      def __init__(self, seed: SeedPort) -> None:
+        pass
+
+    table = Wiring.of(Tally.adapter(built), Seed, Tree)
+
+    with pytest.raises(InjectionCycleError) as cycle:
+      table.resolve(SeedPort)
+
+    assert str(cycle.value).endswith(' -> '.join(map(QualifiedName.of, (Seed, Tree, Seed))))
+    assert built == []
+
   def test_a_required_port_with_no_adapter_halts_the_walk_where_the_build_would_stop(
     self,
   ) -> None:
@@ -563,6 +596,42 @@ class TestCycleWalk:
 
     with pytest.raises(AdapterNotFoundError, match='MissingPort'):
       table.resolve(SeedPort)
+
+  def test_a_planning_error_below_a_singleton_raises_before_any_constructor_runs(self) -> None:
+    # The walk plans every adapter it visits, so a constructor Idunn cannot fill fails the first
+    # build up front, not after Counted has already been made and thrown away.
+    built: list[str] = []
+
+    @Port
+    class TopPort(Protocol):
+      pass
+
+    @Port
+    class CountedPort(Protocol):
+      pass
+
+    @Port
+    class BadPort(Protocol):
+      pass
+
+    @Adapter(CountedPort)
+    class Counted:
+      def __init__(self) -> None:
+        built.append('counted')
+
+    @Adapter(BadPort)
+    class Bad:
+      def __init__(self, label: str) -> None:
+        pass
+
+    @Adapter(TopPort, lifecycle=SINGLETON)
+    class Top:
+      def __init__(self, counted: CountedPort, bad: BadPort) -> None:
+        pass
+
+    with pytest.raises(MissingTypeHintError, match=r'Bad\.label'):
+      Wiring.of(Counted, Bad, Top).resolve(TopPort)
+    assert built == []
 
   def test_an_acyclic_diamond_of_singletons_builds_each_once(self) -> None:
     built: list[str] = []

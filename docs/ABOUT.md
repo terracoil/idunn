@@ -44,7 +44,9 @@ The metaphor is load-bearing. Once you think in baskets and apples, the API most
 
 ## A toolkit you can read in one sitting
 
-Everything you import lives at the top level of the `idunn` package:
+Everything an application imports lives at the top level of the `idunn` package. Its tests
+borrow one more name, `Harness`, from `idunn.testing`, kept apart so production code never
+reaches for it:
 
 ```python
 from idunn import Port, Adapter, Invert  # the three decorators: the entire authoring surface

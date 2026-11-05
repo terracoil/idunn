@@ -8,12 +8,12 @@ import subprocess
 import sys
 from pathlib import Path
 from textwrap import dedent
-from threading import Barrier, Thread
 
 import pytest
+
 from idunn import DiscoveryError, Idunn, ReportMap
 
-from _support import PackageWriter, Resolve
+from _support import PackageWriter, Racer, Resolve
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -45,25 +45,16 @@ class SamplePackage:
   """
 
   @classmethod
-  def install(
-    cls, *, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, package: str, reenter: bool = False
-  ) -> Path:
-    """Write the package, put ``tmp_path`` on ``sys.path`` and return the package directory.
+  def install(cls, writer: PackageWriter, *, package: str, reenter: bool = False) -> Path:
+    """Write the package through ``writer`` and return its directory.
     With ``reenter`` the adapter module ends by bootstrapping its own root, as a library entry
     point running at import time would.
     """
-    package_dir = tmp_path / package
-    (package_dir / 'adapters').mkdir(parents=True)
-    (package_dir / '__init__.py').write_text('', encoding='utf-8')
-    (package_dir / 'adapters' / '__init__.py').write_text('', encoding='utf-8')
-    (package_dir / 'ports.py').write_text(dedent(cls.PORTS).strip() + '\n', encoding='utf-8')
-    adapter_source = dedent(cls.ADAPTER.format(package=package)).strip() + '\n'
-    if reenter:
-      adapter_source += dedent(cls.REENTRY.format(package=package))
-    (package_dir / 'adapters' / 'apple.py').write_text(adapter_source, encoding='utf-8')
-    monkeypatch.syspath_prepend(str(tmp_path))
-    importlib.invalidate_caches()
-    return package_dir
+    adapter: str = dedent(cls.ADAPTER.format(package=package)).strip()
+    reentry: str = dedent(cls.REENTRY.format(package=package)).strip() if reenter else ''
+    return writer.package(
+      package, {'ports.py': cls.PORTS, 'adapters/apple.py': f'{adapter}\n\n{reentry}'}
+    )
 
   @staticmethod
   def take_apple(package: str) -> str:
@@ -73,11 +64,9 @@ class SamplePackage:
     return str(basket.take_apple())
 
 
-def test_bootstrap_discovers_and_wires_on_first_call(
-  tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_bootstrap_discovers_and_wires_on_first_call(writer: PackageWriter) -> None:
   package = 'bootstrap_app_one'
-  SamplePackage.install(tmp_path=tmp_path, monkeypatch=monkeypatch, package=package)
+  SamplePackage.install(writer, package=package)
 
   report = Idunn().bootstrap(package)
 
@@ -85,11 +74,9 @@ def test_bootstrap_discovers_and_wires_on_first_call(
   assert SamplePackage.take_apple(package) == f'golden apple from {package}'
 
 
-def test_bootstrap_returns_cached_report_without_rescanning(
-  tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_bootstrap_returns_cached_report_without_rescanning(writer: PackageWriter) -> None:
   package = 'bootstrap_app_two'
-  package_dir = SamplePackage.install(tmp_path=tmp_path, monkeypatch=monkeypatch, package=package)
+  package_dir = SamplePackage.install(writer, package=package)
   first = Idunn().bootstrap(package)
 
   # A rescan could not list the deleted adapters, so the identical object proves none happened.
@@ -100,11 +87,9 @@ def test_bootstrap_returns_cached_report_without_rescanning(
   assert len(second['registered_adapters']) == 1
 
 
-def test_bootstrap_ignores_options_on_repeat_calls(
-  tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_bootstrap_ignores_options_on_repeat_calls(writer: PackageWriter) -> None:
   package = 'bootstrap_app_three'
-  SamplePackage.install(tmp_path=tmp_path, monkeypatch=monkeypatch, package=package)
+  SamplePackage.install(writer, package=package)
   first = Idunn().bootstrap(package)
 
   second = Idunn().bootstrap(package, exclude='adapters', strict=False)
@@ -113,12 +98,10 @@ def test_bootstrap_ignores_options_on_repeat_calls(
   assert len(second['registered_adapters']) == 1
 
 
-def test_bootstrap_tracks_roots_independently(
-  tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_bootstrap_tracks_roots_independently(writer: PackageWriter) -> None:
   left, right = 'bootstrap_app_left', 'bootstrap_app_right'
-  SamplePackage.install(tmp_path=tmp_path, monkeypatch=monkeypatch, package=left)
-  SamplePackage.install(tmp_path=tmp_path, monkeypatch=monkeypatch, package=right)
+  SamplePackage.install(writer, package=left)
+  SamplePackage.install(writer, package=right)
 
   left_report = Idunn().bootstrap(left)
   right_report = Idunn().bootstrap(right)
@@ -130,11 +113,9 @@ def test_bootstrap_tracks_roots_independently(
   assert SamplePackage.take_apple(right) == f'golden apple from {right}'
 
 
-def test_reset_forgets_bootstrap_so_it_rediscovers(
-  tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_reset_forgets_bootstrap_so_it_rediscovers(writer: PackageWriter) -> None:
   package = 'bootstrap_app_four'
-  SamplePackage.install(tmp_path=tmp_path, monkeypatch=monkeypatch, package=package)
+  SamplePackage.install(writer, package=package)
   first = Idunn().bootstrap(package)
 
   second = Idunn().reset(environment='local').bootstrap(package)
@@ -144,47 +125,31 @@ def test_reset_forgets_bootstrap_so_it_rediscovers(
   assert SamplePackage.take_apple(package) == f'golden apple from {package}'
 
 
-def test_bootstrap_is_safe_under_concurrent_first_calls(
-  tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_bootstrap_is_safe_under_concurrent_first_calls(writer: PackageWriter) -> None:
   package = 'bootstrap_app_five'
-  SamplePackage.install(tmp_path=tmp_path, monkeypatch=monkeypatch, package=package)
+  SamplePackage.install(writer, package=package)
   thread_count = 8
-  barrier = Barrier(thread_count)
   reports: list[ReportMap] = []
+  racer = Racer(timeout=10)
 
-  def race() -> None:
-    barrier.wait()
-    reports.append(Idunn().bootstrap(package))
+  racer.run(*(lambda: reports.append(Idunn().bootstrap(package)) for _ in range(thread_count)))
 
-  threads = [Thread(target=race) for _ in range(thread_count)]
-  for thread in threads:
-    thread.start()
-  for thread in threads:
-    thread.join()
-
+  assert racer.errors == []
   assert len(reports) == thread_count
   assert all(report is reports[0] for report in reports)
   assert len(reports[0]['registered_adapters']) == 1
 
 
-def test_bootstrap_reentered_during_discovery_does_not_deadlock(
-  tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_bootstrap_reentered_during_discovery_does_not_deadlock(writer: PackageWriter) -> None:
   package = 'bootstrap_app_six'
-  SamplePackage.install(tmp_path=tmp_path, monkeypatch=monkeypatch, package=package, reenter=True)
-  reports: list[ReportMap] = []
-  # Daemon thread: a regression to a plain Lock would hang forever, not fail the join.
-  thread = Thread(target=lambda: reports.append(Idunn().bootstrap(package)), daemon=True)
+  SamplePackage.install(writer, package=package, reenter=True)
+  # On a Racer thread: a regression to a plain Lock would hang forever, not fail the call.
+  report: ReportMap = Racer(timeout=10).call(lambda: Idunn().bootstrap(package))
 
-  thread.start()
-  thread.join(timeout=10)
-
-  assert not thread.is_alive()
   # The nested run registers the adapter, the outer run finds nothing new, and the outer call,
   # last out, caches the merge of both and returns it.
-  assert Idunn().bootstrap(package) is reports[0]
-  assert len(reports[0]['registered_adapters']) == 1
+  assert Idunn().bootstrap(package) is report
+  assert len(report['registered_adapters']) == 1
   assert SamplePackage.take_apple(package) == f'golden apple from {package}'
 
 
@@ -237,10 +202,10 @@ class MergeSources:
 
 
 def test_reentrant_bootstrap_caches_classes_defined_after_the_nested_call(
-  tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+  writer: PackageWriter,
 ) -> None:
   package = 'bootstrap_merge_middle'
-  PackageWriter(tmp_path=tmp_path, monkeypatch=monkeypatch).package(
+  writer.package(
     package,
     {
       'ports.py': MergeSources.PORTS,
@@ -263,11 +228,9 @@ def test_reentrant_bootstrap_caches_classes_defined_after_the_nested_call(
   assert Idunn().bootstrap(package) is report
 
 
-def test_bootstrap_at_the_top_of_a_module_still_caches_every_class(
-  tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_bootstrap_at_the_top_of_a_module_still_caches_every_class(writer: PackageWriter) -> None:
   package = 'bootstrap_merge_top'
-  PackageWriter(tmp_path=tmp_path, monkeypatch=monkeypatch).package(
+  writer.package(
     package,
     {
       'ports.py': MergeSources.PORTS,
@@ -285,12 +248,10 @@ def test_bootstrap_at_the_top_of_a_module_still_caches_every_class(
   assert Idunn().bootstrap(package) is report
 
 
-def test_import_time_bootstrap_from_a_module_outside_the_root(
-  tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_import_time_bootstrap_from_a_module_outside_the_root(writer: PackageWriter) -> None:
   package = 'bootstrap_app_eight'
-  SamplePackage.install(tmp_path=tmp_path, monkeypatch=monkeypatch, package=package)
-  PackageWriter(tmp_path=tmp_path, monkeypatch=monkeypatch).module(
+  SamplePackage.install(writer, package=package)
+  writer.module(
     'bootstrap_outside_caller',
     f"""
     from idunn import Idunn
@@ -313,11 +274,9 @@ def test_autodiscover_and_bootstrap_share_one_signature() -> None:
   assert inspect.signature(Idunn.autodiscover) == inspect.signature(Idunn.bootstrap)
 
 
-def test_bootstrap_retries_after_a_failed_discovery(
-  tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_bootstrap_retries_after_a_failed_discovery(writer: PackageWriter) -> None:
   package = 'bootstrap_app_seven'
-  package_dir = SamplePackage.install(tmp_path=tmp_path, monkeypatch=monkeypatch, package=package)
+  package_dir = SamplePackage.install(writer, package=package)
   broken = package_dir / 'broken.py'
   broken.write_text('raise RuntimeError("not yet")\n', encoding='utf-8')
 
@@ -443,9 +402,9 @@ class DeadlockScenario:
 
 
 def test_import_time_bootstrap_does_not_deadlock_against_concurrent_discovery(
-  tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+  tmp_path: Path, writer: PackageWriter
 ) -> None:
-  DeadlockScenario.write(PackageWriter(tmp_path=tmp_path, monkeypatch=monkeypatch))
+  DeadlockScenario.write(writer)
 
   # A child process, so a regression fails this test instead of leaving a daemon thread holding a
   # lock that hangs every later bootstrap in the suite.
@@ -566,9 +525,9 @@ class CrossRootScenario:
 
 
 def test_roots_bootstrapping_each_other_at_import_time_cache_complete_reports(
-  tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+  tmp_path: Path, writer: PackageWriter
 ) -> None:
-  CrossRootScenario.write(PackageWriter(tmp_path=tmp_path, monkeypatch=monkeypatch))
+  CrossRootScenario.write(writer)
 
   result = subprocess.run(
     [sys.executable, str(tmp_path / 'xr_driver.py'), str(tmp_path), str(REPO_ROOT)],

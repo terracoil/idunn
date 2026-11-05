@@ -6,8 +6,10 @@ can move without a scavenger hunt.
 """
 
 import ast
+import sys
 from collections.abc import Mapping
 from pathlib import Path
+from types import ModuleType
 
 import idunn
 import idunn.testing
@@ -32,12 +34,27 @@ EXPECTED_PUBLIC_NAMES = {
 
 EXPECTED_TESTING_NAMES = {'Harness'}
 
+# No resolve, no register: business code has no way to wire itself.
+EXPECTED_FACADE_METHODS = {'autodiscover', 'bootstrap', 'describe', 'environment', 'reset'}
+# The doors Invert and Harness use, plus describe()'s two formatters; a sixth door is a test change.
+EXPECTED_FACADE_HOOKS = {
+  '_describe_adapter',
+  '_describe_binding',
+  '_inject',
+  '_install',
+  '_override',
+  '_restore',
+  '_snapshot',
+}
+EXPECTED_HARNESS_METHODS = {'install', 'override'}
+
 
 class ImportProbe:
   """Finds absolute imports that bypass a public barrel or reach past a layer package.
-  ``from idunn... import`` is flagged for a module path, or for a public name imported from
-  anywhere but its home barrel (``Harness`` from ``idunn.app``, or ``Port`` from
-  ``idunn.testing``), and plain ``import idunn.x.y`` for the module path. ``import idunn.internal``
+  ``from idunn... import`` is flagged for a module path (``from idunn.domain import report``
+  counts), or for a public name imported from anywhere but its home barrel (``Harness`` from
+  ``idunn.app``, or ``Port`` from ``idunn.testing``), and plain ``import idunn.x.y`` for the module
+  path. ``import idunn.internal``
   names a layer package, which is allowed, so the same two-dot line applies to both forms.
   """
 
@@ -66,7 +83,13 @@ class ImportProbe:
       and node.module is not None
       and (node.module == 'idunn' or node.module.startswith('idunn.'))
       for alias in node.names
-      if node.module.count('.') > 1 or homes.get(alias.name, node.module) != node.module
+      if node.module.count('.') > 1
+      or homes.get(alias.name, node.module) != node.module
+      # A module named through its layer's barrel; `from idunn import internal` names the layer.
+      or (
+        node.module != 'idunn'
+        and isinstance(getattr(sys.modules.get(node.module), alias.name, None), ModuleType)
+      )
     ]
     plain_hits: list[tuple[int, str]] = [
       (node.lineno, f'{node.lineno} {alias.name}')
@@ -91,6 +114,19 @@ def test_root_does_not_export_testing_names() -> None:
   # Test tooling stays one deliberate import away, so `from idunn import *` never drags it in.
   assert not EXPECTED_TESTING_NAMES & set(idunn.__all__)
   assert not any(hasattr(idunn, name) for name in EXPECTED_TESTING_NAMES)
+
+
+def test_the_facade_has_exactly_its_public_methods_and_private_doors() -> None:
+  members: set[str] = {name for name in vars(idunn.Idunn) if not name.startswith('__')}
+
+  assert {name for name in members if not name.startswith('_')} == EXPECTED_FACADE_METHODS
+  assert {name for name in members if name.startswith('_')} == EXPECTED_FACADE_HOOKS
+
+
+def test_the_harness_has_exactly_install_and_override() -> None:
+  public: set[str] = {name for name in vars(idunn.testing.Harness) if not name.startswith('_')}
+
+  assert public == EXPECTED_HARNESS_METHODS
 
 
 def test_report_map_shape_is_pinned() -> None:
@@ -133,7 +169,9 @@ def test_import_probe_flags_public_names_and_module_paths(tmp_path: Path) -> Non
     'from idunn.app import Harness\n'
     'from idunn.testing import Harness\n'
     'from idunn import Harness, Idunn\n'
-    'from idunn.testing import Port\n',
+    'from idunn.testing import Port\n'
+    'from idunn.domain import report\n'
+    'from idunn import internal\n',
     encoding='utf-8',
   )
   hits: list[str] = ImportProbe.offenders(sample, ImportProbe.homes())
@@ -144,4 +182,5 @@ def test_import_probe_flags_public_names_and_module_paths(tmp_path: Path) -> Non
     '9 idunn.app.Harness',
     '11 idunn.Harness',
     '12 idunn.testing.Port',
+    '13 idunn.domain.report',
   ]

@@ -13,11 +13,11 @@ import inspect
 import re
 import sys
 from collections.abc import Callable
-from pathlib import Path
 from types import ModuleType
 from typing import Any, Protocol
 
 import pytest
+
 from idunn import Adapter, AdapterNotFoundError, InvalidPortError, Invert, Port
 from idunn.domain import FunctionShape, InvertDeclaration
 from idunn.internal import ConstructorPlanner, LazyPlan
@@ -111,11 +111,6 @@ class Sources:
     found = FunctionShape.of(function)
     assert found is not None
     return found
-
-
-@pytest.fixture
-def writer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> PackageWriter:
-  return PackageWriter(tmp_path=tmp_path, monkeypatch=monkeypatch)
 
 
 # Shape rules: decoration, every version, no hints needed.
@@ -359,9 +354,7 @@ def test_lazy_plan_plans_eagerly_when_it_can_and_lazily_when_it_must(
 ) -> None:
   module = Sources.load(writer, 'contract_dangling_lazy', Sources.DANGLING)
   empty = InvertDeclaration.frozen(ports={}, keys={})
-  lazy = LazyPlan(
-    module.pick, shape=Sources.shape(module.pick), declaration=empty, keyword_only=False
-  )
+  lazy = LazyPlan(module.pick, shape=Sources.shape(module.pick), declaration=empty)
 
   assert lazy.try_now() is False
   assert lazy.ready is False
@@ -375,9 +368,7 @@ def test_lazy_plan_plans_eagerly_when_it_can_and_lazily_when_it_must(
   def ready(*, basket: BasketPort) -> None:
     pass
 
-  assert LazyPlan(
-    ready, shape=Sources.shape(ready), declaration=empty, keyword_only=False
-  ).try_now()
+  assert LazyPlan(ready, shape=Sources.shape(ready), declaration=empty).try_now()
 
 
 # Keyword-only ports: a positional argument can never land in a port.
@@ -475,7 +466,6 @@ def test_undecorated_adapter_constructors_may_still_take_ports_positionally() ->
       pass
 
   with Harness.install(GoldenBasket, BasketService):
-    assert ConstructorPlanner.KEYWORD_ONLY_PORTS is True
     assert Feast().service.run() == 'golden'
 
 

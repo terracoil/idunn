@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 from types import FrameType
+from typing import Final
 
 
 class ImportContext:
@@ -17,7 +18,7 @@ class ImportContext:
   """
 
   # The frozen bootstrap keeps this filename even under ``-X frozen_modules=off``.
-  BOOTSTRAP_FILENAME: str = '<frozen importlib._bootstrap>'
+  BOOTSTRAP_FILENAME: Final[str] = '<frozen importlib._bootstrap>'
 
   @classmethod
   def active(cls) -> bool:

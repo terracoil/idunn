@@ -9,11 +9,11 @@ running when its block closes, and one starting while the block is being put awa
 import importlib
 import threading
 from collections.abc import Callable
-from pathlib import Path
 from typing import Protocol
 
-import idunn
 import pytest
+
+import idunn
 from idunn import (
   Adapter,
   AdapterNotFoundError,
@@ -26,7 +26,7 @@ from idunn import (
   Port,
   ReportMap,
 )
-from idunn.domain import Catalog, EngineSnapshot
+from idunn.domain import Catalog
 from idunn.internal import BootstrapGate
 from idunn.testing import Harness
 
@@ -53,8 +53,9 @@ class PlainBasket:
     return 'plain'
 
 
+# GoldenBasket's slot in every environment: the two can never be installed together.
 @Adapter(BasketPort)
-class RivalBasket:  # GoldenBasket's slot, every environment: the two can never be installed together
+class RivalBasket:
   def take(self) -> str:
     return 'rival'
 
@@ -171,11 +172,6 @@ class RacingLock:
       self.racer.run(race)
 
 
-@pytest.fixture
-def writer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> PackageWriter:
-  return PackageWriter(tmp_path=tmp_path, monkeypatch=monkeypatch)
-
-
 class TestInstall:
   def test_registers_for_the_block_and_forgets_on_exit(self) -> None:
     with Harness.install(GoldenBasket):
@@ -205,6 +201,23 @@ class TestInstall:
 
       assert Idunn()._mapper.catalog is catalog
       assert Feast().basket.take() == 'golden'
+
+  def test_an_undecorated_class_is_refused(self) -> None:
+    with pytest.raises(InvalidAdapterError, match=r'not marked with @Adapter: .*\.FakeBasket$'):
+      with Harness.install(FakeBasket):
+        pass  # never runs: the install raises first
+
+  def test_an_undecorated_subclass_is_refused_as_discovery_would_skip_it(self) -> None:
+    # It inherits GoldenBasket's stamp as an attribute, but never wore the decorator itself.
+    class GildedBasket(GoldenBasket):
+      def take(self) -> str:
+        return 'gilded'
+
+    with pytest.raises(InvalidAdapterError, match=r'not marked with @Adapter: .*\.GildedBasket$'):
+      with Harness.install(GildedBasket):
+        pass  # never runs: the install raises first
+
+    assert Idunn().describe() == EMPTY
 
   def test_a_bootstrap_inside_an_install_leaves_no_report_behind(
     self, writer: PackageWriter
@@ -295,6 +308,14 @@ class TestOverride:
 
     assert Idunn()._snapshot().overrides == {}
 
+  def test_rejects_a_key_that_is_not_a_str(self) -> None:
+    # No @Invert could ever ask for key 5, so the stand-in would never be reached.
+    with pytest.raises(TypeError, match=r'Override key for .*\.BasketPort must be a str: 5$'):
+      with Harness.override(BasketPort, FakeBasket(), key=5):  # type: ignore[arg-type]
+        pass  # never runs: the override raises first
+
+    assert Idunn()._snapshot().overrides == {}
+
   def test_rejects_an_instance_that_does_not_satisfy_the_port(self) -> None:
     class Stone:
       pass
@@ -342,11 +363,11 @@ class TestOverride:
 
     rooster = object()
     with Harness.install(Egg, Hen):
-      with pytest.raises(InjectionCycleError):
+      with pytest.raises(InjectionCycleError, match=r'Egg -> .*Hen -> .*Egg$'):
         Resolve.port(EggPort)
       with Harness.override(HenPort, rooster):
         egg = Resolve.port(EggPort)
-      with pytest.raises(InjectionCycleError):
+      with pytest.raises(InjectionCycleError, match=r'Egg -> .*Hen -> .*Egg$'):
         Resolve.port(EggPort)  # the egg left with the rooster
 
     assert egg.hen is rooster
@@ -423,19 +444,17 @@ class TestRestore:
         started.set()
         proceed.wait(timeout=5)
 
-    stale: list[object] = []
-    builder = threading.Thread(target=lambda: stale.append(Resolve.port(SlowPort)), daemon=True)
+    builder = Racer(timeout=5)
     with Harness.install(Slow):
       with Harness.override(BasketPort, FakeBasket()):
-        builder.start()
+        builder.start('builder', lambda: Resolve.port(SlowPort))
         assert started.wait(timeout=5)
       proceed.set()
-      builder.join(timeout=5)
+      builder.join()
       fresh = Resolve.port(SlowPort)
 
-    assert not builder.is_alive()
-    assert stale
-    assert fresh is not stale[0]
+    assert builder.errors == []
+    assert fresh is not builder.results['builder']
 
   @pytest.mark.parametrize('after', [False, True], ids=['before-the-swap', 'after-the-swap'])
   def test_a_resolve_starting_mid_restore_cannot_keep_the_fake(
@@ -455,6 +474,57 @@ class TestRestore:
     assert racing.racer.errors == []
     assert len(raced) == 1
     assert hub.report() == 'golden/ink'
+
+
+class TestOrder:
+  """Blocks unwind last in, first out; ``with`` guarantees it, hand-driven blocks may not."""
+
+  def test_an_outer_block_exiting_first_raises_and_leaks_nothing(self) -> None:
+    # Interleaved by hand, as no `with` can be. Unchecked, the inner exit restored its own picture,
+    # which held the outer block's fake, and the fake outlived both blocks.
+    outer, inner = Harness.override(BasketPort, FakeBasket()), Harness.install(GoldenBasket)
+    outer.__enter__()
+    inner.__enter__()
+    with pytest.raises(RuntimeError, match=r'block 1 of 2 exited before the blocks inside it'):
+      outer.__exit__(None, None, None)
+
+    assert Feast().basket.take() == 'fake'  # nothing restored yet: the fake still answers
+    assert 'GoldenBasket' in Idunn().describe()
+    inner.__exit__(None, None, None)
+
+    assert Idunn().describe() == EMPTY
+    assert Idunn()._snapshot().overrides == {}
+    assert (Harness._blocks, Harness._abandoned) == ([], set())
+
+  def test_a_middle_block_exiting_first_is_unwound_by_the_inner_one_only(self) -> None:
+    # The inner exit unwinds through the middle block and stops: the outer block is still open.
+    outer = Harness.install(GoldenBasket, InkLedger, Hub)
+    middle = Harness.override(BasketPort, FakeBasket())
+    inner = Harness.override(LedgerPort, FakeLedger())
+    outer.__enter__()
+    middle.__enter__()
+    inner.__enter__()
+    with pytest.raises(RuntimeError, match=r'block 2 of 3 exited'):
+      middle.__exit__(None, None, None)
+    inner.__exit__(None, None, None)
+
+    assert Resolve.port(HubPort).report() == 'golden/ink'
+    outer.__exit__(None, None, None)
+    assert Idunn().describe() == EMPTY
+    assert (Harness._blocks, Harness._abandoned) == ([], set())
+
+  def test_nesting_errors_and_decorated_calls_leave_no_block_open(self) -> None:
+    @Harness.override(BasketPort, FakeBasket())
+    def take() -> str:
+      return Feast().basket.take()
+
+    with Harness.install(GoldenBasket):
+      with pytest.raises(RuntimeError, match='spilled'):
+        with Harness.override(BasketPort, FakeBasket()):
+          raise RuntimeError('spilled the apples')
+      assert (take(), take(), Feast().basket.take()) == ('fake', 'fake', 'golden')
+
+    assert (Harness._blocks, Harness._abandoned) == ([], set())
 
 
 @Harness.install(GoldenBasket)
@@ -494,16 +564,7 @@ def test_the_gate_restores_carried_runs_for_the_retry_to_merge() -> None:
 
   gate = BootstrapGate()
   carried_run, retry_run = run('orchard.Pear'), run('orchard.Plum')
-  gate.restore(
-    EngineSnapshot(
-      environment='local',
-      catalog=Catalog.empty(),
-      instances={},
-      overrides={},
-      reports={},
-      carried={'orchard': (carried_run,)},
-    )
-  )
+  gate.restore(reports={}, carried={'orchard': (carried_run,)})
   reports, carried = gate.snapshot()
 
   merged = gate.run('orchard', discover=lambda: retry_run)

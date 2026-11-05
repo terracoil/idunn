@@ -20,7 +20,7 @@ from .parameter_plan import ParameterPlan
 from .port_binding import PortBinding
 from .report import ReportMap
 
-__all__ = (
+__all__ = [
   'AdapterDeclaration',
   'AdapterMetadata',
   'AdapterNotFoundError',
@@ -39,4 +39,4 @@ __all__ = (
   'PortBinding',
   'ReportMap',
   'SlotKey',
-)
+]

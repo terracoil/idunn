@@ -11,7 +11,8 @@ from functools import partial
 from typing import Any, Protocol
 
 import pytest
-from idunn import Adapter, AdapterNotFoundError, InvalidAdapterError, InvalidPortError, Port
+
+from idunn import Adapter, InvalidAdapterError, InvalidPortError, Port
 from idunn.domain import Catalog, PortBinding
 from idunn.internal import InversionMapper
 
@@ -95,20 +96,20 @@ class Greeters:
 
 def test_selection_is_scoped_per_environment() -> None:
   mapper = InversionMapper()
-  mapper.register_adapter(ProdGreeter)
-  mapper.register_adapter(SandboxGreeter)
+  mapper.register_batch(adapters=(ProdGreeter,))
+  mapper.register_batch(adapters=(SandboxGreeter,))
 
-  prod = mapper.select(port=GreeterPort, key=None, environment='prod')
-  test = mapper.select(port=GreeterPort, key=None, environment='test')
+  prod = mapper.find(port=GreeterPort, key=None, environment='prod')
+  test = mapper.find(port=GreeterPort, key=None, environment='test')
 
-  assert prod.adapter is ProdGreeter
-  assert test.adapter is SandboxGreeter
+  assert prod is not None and prod.adapter is ProdGreeter
+  assert test is not None and test.adapter is SandboxGreeter
   assert mapper.find(port=GreeterPort, key=None, environment='local') is None
 
 
 def test_find_returns_the_registered_metadata() -> None:
   mapper = InversionMapper()
-  mapper.register_adapter(ProdGreeter)
+  mapper.register_batch(adapters=(ProdGreeter,))
 
   found = mapper.find(port=GreeterPort, key=None, environment='prod')
 
@@ -118,11 +119,11 @@ def test_find_returns_the_registered_metadata() -> None:
 def test_a_registration_is_visible_to_every_later_lookup() -> None:
   mapper = InversionMapper()
   assert mapper.find(port=GreeterPort, key=None, environment='prod') is None
-  mapper.register_adapter(ProdGreeter)
+  mapper.register_batch(adapters=(ProdGreeter,))
   hit = mapper.find(port=GreeterPort, key=None, environment='prod')
   assert hit is not None and hit.adapter is ProdGreeter
 
-  mapper.register_adapter(GoldGreeter)
+  mapper.register_batch(adapters=(GoldGreeter,))
 
   # Nothing to invalidate: the new snapshot simply has both, and the earlier hit still stands.
   keyed = mapper.find(port=GreeterPort, key='gold', environment='prod')
@@ -132,8 +133,8 @@ def test_a_registration_is_visible_to_every_later_lookup() -> None:
 
 def test_keyed_and_unkeyed_live_in_separate_slots() -> None:
   mapper = InversionMapper()
-  mapper.register_adapter(AnyGreeter)
-  mapper.register_adapter(GoldGreeter)
+  mapper.register_batch(adapters=(AnyGreeter,))
+  mapper.register_batch(adapters=(GoldGreeter,))
 
   unkeyed = mapper.find(port=GreeterPort, key=None, environment='local')
   keyed = mapper.find(port=GreeterPort, key='gold', environment='local')
@@ -145,7 +146,7 @@ def test_keyed_and_unkeyed_live_in_separate_slots() -> None:
 
 def test_env_agnostic_adapter_answers_every_environment() -> None:
   mapper = InversionMapper()
-  mapper.register_adapter(AnyGreeter)
+  mapper.register_batch(adapters=(AnyGreeter,))
 
   local = mapper.find(port=GreeterPort, key=None, environment='local')
   prod = mapper.find(port=GreeterPort, key=None, environment='prod')
@@ -158,14 +159,14 @@ def test_env_agnostic_adapter_answers_every_environment() -> None:
 
 def test_clear_swaps_in_an_empty_catalog() -> None:
   mapper = InversionMapper()
-  mapper.register_adapter(AnyGreeter)
+  mapper.register_batch(adapters=(AnyGreeter,))
   before = mapper.catalog
 
   mapper.clear()
 
   assert mapper.catalog == Catalog.empty()
   assert len(before.adapters) == 1  # whoever held the old snapshot keeps it intact
-  mapper.register_adapter(ProdGreeter)
+  mapper.register_batch(adapters=(ProdGreeter,))
   again = mapper.find(port=GreeterPort, key=None, environment='prod')
   assert again is not None and again.adapter is ProdGreeter
 
@@ -173,36 +174,24 @@ def test_clear_swaps_in_an_empty_catalog() -> None:
 def test_idempotent_reregistration_returns_false() -> None:
   mapper = InversionMapper()
 
-  assert mapper.register_adapter(ProdGreeter) is True
+  assert mapper.register_batch(adapters=(ProdGreeter,)) == ((), (ProdGreeter,))
   before = mapper.catalog
-  assert mapper.register_adapter(ProdGreeter) is False
+  assert mapper.register_batch(adapters=(ProdGreeter,)) == ((), ())
 
-  assert mapper.ports == frozenset({GreeterPort})
+  assert mapper.catalog.ports == frozenset({GreeterPort})
   assert mapper.catalog is before  # nothing new, nothing swapped
 
 
-def test_select_raises_with_and_without_key_message() -> None:
-  mapper = InversionMapper()
-
-  with pytest.raises(AdapterNotFoundError) as unkeyed:
-    mapper.select(port=GreeterPort, key=None, environment='local')
-  with pytest.raises(AdapterNotFoundError) as keyed:
-    mapper.select(port=GreeterPort, key='nope', environment='local')
-
-  assert 'with key' not in str(unkeyed.value)
-  assert f"{__name__}.GreeterPort with key 'nope'" in str(keyed.value)
-
-
-def test_register_adapter_on_undecorated_class_raises() -> None:
+def test_registering_an_undecorated_class_raises() -> None:
   mapper = InversionMapper()
 
   with pytest.raises(InvalidAdapterError, match=f'{__name__}.PlainGreeter$'):
-    mapper.register_adapter(PlainGreeter)
+    mapper.register_batch(adapters=(PlainGreeter,))
 
 
 def test_a_registration_leaves_the_previous_snapshot_unchanged() -> None:
   mapper = InversionMapper()
-  mapper.register_adapter(ProdGreeter)
+  mapper.register_batch(adapters=(ProdGreeter,))
   before = mapper.catalog
 
   mapper.register_batch(ports=(LampPort,), adapters=(GoldGreeter,))
@@ -217,7 +206,7 @@ def test_a_registration_leaves_the_previous_snapshot_unchanged() -> None:
 def test_bindings_keep_registration_order() -> None:
   mapper = InversionMapper()
   for adapter in (SandboxGreeter, GoldGreeter, ProdGreeter):
-    mapper.register_adapter(adapter)
+    mapper.register_batch(adapters=(adapter,))
 
   (binding,) = mapper.bindings(environment='test')
 
@@ -240,26 +229,26 @@ def test_batch_reports_only_what_it_added() -> None:
   # GreeterPort arrived implicitly with its adapters, so it was never "new" to report.
   assert first == ((LampPort,), (AnyGreeter, GoldGreeter))
   assert second == ((), ())
-  assert mapper.ports == frozenset({LampPort, GreeterPort})
+  assert mapper.catalog.ports == frozenset({LampPort, GreeterPort})
 
 
 def test_batch_with_a_collision_inside_it_registers_nothing() -> None:
   mapper = InversionMapper()
-  mapper.register_adapter(OilLamp)
-  before_ports = mapper.ports
+  mapper.register_batch(adapters=(OilLamp,))
+  before_ports = mapper.catalog.ports
   before_bindings = mapper.bindings(environment='local')
 
   # RivalGreeter, third in line, collides with AnyGreeter, first in line.
   with pytest.raises(InvalidAdapterError, match='AnyGreeter and .*RivalGreeter'):
     mapper.register_batch(ports=(GreeterPort,), adapters=(AnyGreeter, GoldGreeter, RivalGreeter))
 
-  assert mapper.ports == before_ports == frozenset({LampPort})
+  assert mapper.catalog.ports == before_ports == frozenset({LampPort})
   assert mapper.bindings(environment='local') == before_bindings
 
 
 def test_batch_colliding_with_an_earlier_registration_registers_nothing() -> None:
   mapper = InversionMapper()
-  mapper.register_adapter(AnyGreeter)
+  mapper.register_batch(adapters=(AnyGreeter,))
   before = mapper.catalog
 
   with pytest.raises(InvalidAdapterError, match='AnyGreeter and .*RivalGreeter'):
@@ -267,7 +256,7 @@ def test_batch_colliding_with_an_earlier_registration_registers_nothing() -> Non
 
   assert mapper.catalog is before
   assert mapper.find(port=GreeterPort, key='gold', environment='local') is None
-  assert mapper.register_adapter(GoldGreeter) is True  # and the failed batch let go of the lock
+  assert mapper.register_batch(adapters=(GoldGreeter,))[1] == (GoldGreeter,)  # lock let go
 
 
 def test_batch_with_an_unmarked_port_registers_nothing() -> None:
@@ -288,7 +277,7 @@ def test_concurrent_registration_never_shows_readers_a_broken_catalog() -> None:
 
   def write(adapters: tuple[type[Any], ...]) -> None:
     for adapter in adapters:  # one swap per adapter, to give readers plenty to trip over
-      mapper.register_adapter(adapter)
+      mapper.register_batch(adapters=(adapter,))
 
   def read() -> None:
     seen = 0

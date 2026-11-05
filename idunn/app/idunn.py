@@ -87,7 +87,7 @@ class Idunn(metaclass=MetaSingleton):
     """Return a readable snapshot of the port-to-adapter bindings in the current environment.
     Its ``selected`` line is exactly what an unkeyed ``@Invert()`` parameter would receive.
     """
-    lines = [f'Environment: {self._environment}']
+    lines: list[str] = [f'Environment: {self._environment}']
     for binding in self._mapper.bindings(environment=self._environment):
       lines.extend(self._describe_binding(binding=binding))
     return '\n'.join(lines)
@@ -108,15 +108,15 @@ class Idunn(metaclass=MetaSingleton):
     return self
 
   def _describe_adapter(self, *, metadata: AdapterMetadata) -> str:
-    flag = ' singleton' if metadata.lifecycle == LifecycleEnum.SINGLETON else ''
+    flag: str = ' singleton' if metadata.lifecycle == LifecycleEnum.SINGLETON else ''
     return (
       f'  - {QualifiedName.of(metadata.adapter)} '
       f'key={metadata.key!r} envs={metadata.environment_label()}{flag}'
     )
 
   def _describe_binding(self, *, binding: PortBinding) -> list[str]:
-    selected = QualifiedName.of(binding.selected.adapter) if binding.selected else '<none>'
-    lines = ['', QualifiedName.of(binding.port), f'  selected: {selected}']
+    selected: str = QualifiedName.of(binding.selected.adapter) if binding.selected else '<none>'
+    lines: list[str] = ['', QualifiedName.of(binding.port), f'  selected: {selected}']
     lines.extend(self._describe_adapter(metadata=metadata) for metadata in binding.adapters)
     return lines
 
@@ -142,8 +142,8 @@ class Idunn(metaclass=MetaSingleton):
     """
     self._environment = snapshot.environment
     self._mapper.restore(snapshot.catalog)
-    self._resolver.restore(snapshot)
-    self._gate.restore(snapshot)
+    self._resolver.restore(instances=snapshot.instances, overrides=snapshot.overrides)
+    self._gate.restore(reports=snapshot.reports, carried=snapshot.carried)
 
   def _snapshot(self) -> EngineSnapshot:
     """Capture everything a ``Harness`` block may change, for :meth:`_restore` to put back."""

@@ -6,19 +6,12 @@ from collections.abc import Callable, Mapping
 from threading import Lock
 from types import MappingProxyType
 
-from idunn.domain import EngineSnapshot, ReportMap
+from idunn.domain import ReportMap
 from idunn.util import ImportContext
 
 from .bootstrap_flight import BootstrapFlight
+from .bootstrap_generation import BootstrapGeneration
 from .report_merger import ReportMerger
-
-# One bootstrap memory, keyed by root and swapped whole: cached reports, flights in progress, and
-# the successful runs of failed flights, waiting for the retry that will merge them.
-Generation = tuple[
-  dict[str, ReportMap],
-  dict[str, BootstrapFlight],
-  dict[str, tuple[ReportMap, ...]],
-]
 
 
 class BootstrapGate:
@@ -36,22 +29,29 @@ class BootstrapGate:
   def __init__(self) -> None:
     """Start with nothing cached and nothing in flight."""
     self._lock: Lock = Lock()
-    self._generation: Generation = ({}, {}, {})
+    self._generation: BootstrapGeneration = BootstrapGeneration(reports={}, flights={}, carried={})
 
   def clear(self) -> None:
     """Forget every cached report. Runs still in flight finish into the generation they started in.
     Swapping the maps, rather than emptying them, is what lets a stale run land somewhere harmless.
     """
     with self._lock:
-      self._generation = ({}, {}, {})
+      self._generation = BootstrapGeneration(reports={}, flights={}, carried={})
 
-  def restore(self, snapshot: EngineSnapshot) -> None:
-    """Swap in a new generation holding copies of the snapshot's reports and carried runs.
+  def restore(
+    self,
+    *,
+    reports: Mapping[str, ReportMap],
+    carried: Mapping[str, tuple[ReportMap, ...]],
+  ) -> None:
+    """Swap in a new generation holding copies of what :meth:`snapshot` returned.
     Flights start empty, as after :meth:`clear`: a run still in flight finishes into the discarded
     generation, and copying keeps later runs from writing into the snapshot itself.
     """
     with self._lock:
-      self._generation = (dict(snapshot.reports), {}, dict(snapshot.carried))
+      self._generation = BootstrapGeneration(
+        reports=dict(reports), flights={}, carried=dict(carried)
+      )
 
   def run(self, root_package: str, *, discover: Callable[[], ReportMap]) -> ReportMap:
     """Return the cached report for ``root_package``, running ``discover`` if this call must.
@@ -61,17 +61,17 @@ class BootstrapGate:
     first run caches nothing and wakes its waiters, who try again themselves; the runs that did
     succeed carry over into the retry's report.
     """
-    generation: Generation = self._generation  # one read, so a reset() mid-run cannot split it
-    reports, flights, carried = generation
+    generation: BootstrapGeneration = self._generation  # one read: a reset() cannot split it
+    reports: dict[str, ReportMap] = generation.reports
     report: ReportMap | None = reports.get(root_package)
     while report is None:
       with self._lock:
         report = reports.get(root_package)
-        flight: BootstrapFlight | None = flights.get(root_package)
+        flight: BootstrapFlight | None = generation.flights.get(root_package)
         boarding: bool = report is None and self._may_board(flight)
         if boarding:
-          flights[root_package] = (
-            BootstrapFlight.launch(carried=carried.pop(root_package, ()))
+          generation.flights[root_package] = (
+            BootstrapFlight.launch(carried=generation.carried.pop(root_package, ()))
             if flight is None
             else flight.boarded()
           )
@@ -82,7 +82,7 @@ class BootstrapGate:
           discover=discover,
           owner=flight is None,
         )
-      elif report is None and flight is not None:
+      elif report is None and flight is not None:  # not boarding means a flight; this narrows it
         flight.done.wait()  # holds no gate lock, and no import lock, or it would have boarded
         report = reports.get(root_package)  # still None if the owner failed: go round and claim
     return report
@@ -92,17 +92,17 @@ class BootstrapGate:
     Flights are left out: a run in progress belongs to whoever started it, not to a snapshot.
     """
     with self._lock:
-      reports, _, carried = self._generation
+      generation: BootstrapGeneration = self._generation
       memory: tuple[Mapping[str, ReportMap], Mapping[str, tuple[ReportMap, ...]]] = (
-        MappingProxyType(dict(reports)),
-        MappingProxyType(dict(carried)),
+        MappingProxyType(dict(generation.reports)),
+        MappingProxyType(dict(generation.carried)),
       )
     return memory
 
   def _leave(
     self,
     *,
-    generation: Generation,
+    generation: BootstrapGeneration,
     root_package: str,
     report: ReportMap | None,
     owner_failed: bool,
@@ -110,7 +110,7 @@ class BootstrapGate:
     # The last run out caches the merge and wakes the waiters. Nobody waits for that to happen,
     # so finishing order costs no deadlock edge. A failed flight caches nothing, but its successful
     # runs registered for good and no retry will see their classes as new, so they carry over.
-    reports, flights, carried = generation
+    flights: dict[str, BootstrapFlight] = generation.flights
     with self._lock:
       flight: BootstrapFlight = flights[root_package].leaving(
         report=report, owner_failed=owner_failed
@@ -118,9 +118,9 @@ class BootstrapGate:
       if flight.landed:
         del flights[root_package]
         if flight.failed:
-          carried[root_package] = flight.reports
+          generation.carried[root_package] = flight.reports
         else:
-          reports[root_package] = ReportMerger.merge(flight.reports)
+          generation.reports[root_package] = ReportMerger.merge(flight.reports)
         flight.done.set()
       else:
         flights[root_package] = flight
@@ -136,7 +136,7 @@ class BootstrapGate:
   def _take_part(
     self,
     *,
-    generation: Generation,
+    generation: BootstrapGeneration,
     root_package: str,
     discover: Callable[[], ReportMap],
     owner: bool,
@@ -154,5 +154,5 @@ class BootstrapGate:
     # The owner hands back the cached merge whenever it closed the flight. Only a run that joined
     # from an import the owner never waits on (a module outside the root, or one it excludes or
     # skips) can outlive it; then the owner gets the merge so far and the straggler caches the rest.
-    answer: ReportMap | None = generation[0].get(root_package) if owner else own
+    answer: ReportMap | None = generation.reports.get(root_package) if owner else own
     return ReportMerger.merge(flight.reports) if answer is None else answer

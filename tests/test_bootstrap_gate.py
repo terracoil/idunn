@@ -9,13 +9,15 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from functools import partial
-from threading import Barrier, Event, Thread
+from threading import Barrier, Event
+from typing import Any
 
 import pytest
+
 from idunn import ReportMap
 from idunn.internal import BootstrapGate
 
-from _support import ImportingCall
+from _support import ImportingCall, Racer
 
 ROOT = 'gate_root'
 
@@ -70,34 +72,37 @@ class Stub:
     return cls(AssertionError('the gate ran a discovery it should have waited for'))
 
 
-class Crew:
-  """Runs callables on daemon threads and keeps what each returned or raised, by name."""
+class LateCache(dict[str, ReportMap]):
+  """A report cache whose first read misses, filled by "another thread" right after that read.
+  That is the interleaving the second look under the gate's lock exists for. Without it, the late
+  caller boards a flight of its own, rediscovers, finds nothing new, and caches an empty report
+  over the full one.
+  """
 
-  def __init__(self) -> None:
-    """Start with nobody on deck."""
-    self.results: dict[str, object] = {}
-    self.errors: dict[str, BaseException] = {}
-    self._threads: list[Thread] = []
+  def __init__(self, cached: ReportMap) -> None:
+    """Hold ``cached`` back until the first read has missed."""
+    super().__init__()
+    self._cached: ReportMap = cached
+    self._reads: int = 0
 
-  def join(self) -> None:
-    """Wait for everyone; a thread still running after 10 s is a deadlock and goes in ``errors``."""
-    for thread in self._threads:
-      thread.join(timeout=10)
-    self.errors.update(
-      {thread.name: TimeoutError(thread.name) for thread in self._threads if thread.is_alive()}
-    )
+  def get(self, key: str, default: Any = None) -> Any:
+    """Miss once, caching the report as the miss goes out; answer honestly after that."""
+    self._reads += 1
+    if self._reads == 1:
+      self[key] = self._cached
+    return default if self._reads == 1 else super().get(key, default)
 
-  def start(self, name: str, target: Callable[[], object]) -> None:
-    """Start ``target`` on a daemon thread called ``name``."""
-    thread = Thread(target=self._guarded, args=(name, target), name=name, daemon=True)
-    self._threads.append(thread)
-    thread.start()
 
-  def _guarded(self, name: str, target: Callable[[], object]) -> None:
-    try:
-      self.results[name] = target()
-    except BaseException as error:  # the tests assert on exactly what landed here
-      self.errors[name] = error
+class Within:
+  """Calls ``gate.run`` from a :class:`Racer` thread, so a gate that waits forever fails in 5 s.
+  For the calls a test makes itself. Calls made from inside a ``discover`` stay where they are:
+  being on the same thread as the run they interrupt is what makes them re-entries.
+  """
+
+  @staticmethod
+  def run(gate: BootstrapGate, discover: Stub) -> ReportMap:
+    """Return what ``gate.run`` returned for ``ROOT``, or raise what it raised."""
+    return Racer(timeout=5).call(partial(gate.run, ROOT, discover=discover))
 
 
 def test_first_run_is_cached_and_never_repeated() -> None:
@@ -106,10 +111,10 @@ def test_first_run_is_cached_and_never_repeated() -> None:
   first_run = Stub(report)
   never = Stub.never()
 
-  first = gate.run(ROOT, discover=first_run)
+  first = Within.run(gate, first_run)
 
   assert first == report
-  assert gate.run(ROOT, discover=never) is first
+  assert Within.run(gate, never) is first
   assert (first_run.calls, never.calls) == (1, 0)
 
 
@@ -126,7 +131,7 @@ def test_reentrant_run_returns_its_own_report_and_the_cache_merges_both() -> Non
   nested = Stub(nested_report)
   outer = Stub(outer_report, before=lambda: nested_results.append(gate.run(ROOT, discover=nested)))
 
-  merged = gate.run(ROOT, discover=outer)
+  merged = Within.run(gate, outer)
 
   assert nested_results[0] is nested_report
   # Sorted union of imports; a module skipped by one run but imported by another was only early;
@@ -138,7 +143,7 @@ def test_reentrant_run_returns_its_own_report_and_the_cache_merges_both() -> Non
     'registered_ports': ('gate_root.c.Port',),
     'registered_adapters': ('gate_root.c.First', 'gate_root.b.Second'),
   }
-  assert gate.run(ROOT, discover=Stub.never()) is merged
+  assert Within.run(gate, Stub.never()) is merged
 
 
 def test_a_failed_participant_is_left_out_and_the_flight_goes_on() -> None:
@@ -152,11 +157,11 @@ def test_a_failed_participant_is_left_out_and_the_flight_goes_on() -> None:
     except RuntimeError as error:
       failures.append(str(error))
 
-  merged = gate.run(ROOT, discover=Stub(outer_report, before=stumble))
+  merged = Within.run(gate, Stub(outer_report, before=stumble))
 
   assert failures == ['participant']
   assert merged == outer_report
-  assert gate.run(ROOT, discover=Stub.never()) is merged
+  assert Within.run(gate, Stub.never()) is merged
 
 
 def test_a_failed_owner_caches_nothing_and_its_participants_carry_into_the_retry() -> None:
@@ -169,13 +174,13 @@ def test_a_failed_owner_caches_nothing_and_its_participants_carry_into_the_retry
   )
 
   with pytest.raises(RuntimeError, match='owner'):
-    gate.run(ROOT, discover=owner)
+    Within.run(gate, owner)
 
   # Half a bootstrap is not cached, but Early is registered for good and the retry cannot see it
   # as new, so the retry's report has to inherit it or nobody will ever list it.
   assert nested_results == [participant_report]
   retry = Stub(Runs.report(adapters=('gate_root.Retry',)))
-  assert gate.run(ROOT, discover=retry)['registered_adapters'] == (
+  assert Within.run(gate, retry)['registered_adapters'] == (
     'gate_root.Early',
     'gate_root.Retry',
   )
@@ -189,12 +194,12 @@ def test_clear_forgets_the_reports_a_failed_flight_carried() -> None:
     before=partial(gate.run, ROOT, discover=Stub(Runs.report(adapters=('gate_root.Early',)))),
   )
   with pytest.raises(RuntimeError, match='owner'):
-    gate.run(ROOT, discover=owner)
+    Within.run(gate, owner)
 
   gate.clear()
 
   retry = Stub(Runs.report(adapters=('gate_root.Retry',)))
-  assert gate.run(ROOT, discover=retry)['registered_adapters'] == ('gate_root.Retry',)
+  assert Within.run(gate, retry)['registered_adapters'] == ('gate_root.Retry',)
 
 
 def test_nested_reentries_keep_the_flight_open_until_the_outermost_run_leaves() -> None:
@@ -208,11 +213,11 @@ def test_nested_reentries_keep_the_flight_open_until_the_outermost_run_leaves() 
     Runs.report(adapters=('gate_root.Outer',)), before=partial(gate.run, ROOT, discover=middle)
   )
 
-  merged = gate.run(ROOT, discover=outer)
+  merged = Within.run(gate, outer)
 
   # Three runs on one thread are three seats: the innermost leaving must not land the flight.
   assert merged['registered_adapters'] == ('gate_root.Inner', 'gate_root.Middle', 'gate_root.Outer')
-  assert gate.run(ROOT, discover=Stub.never()) is merged
+  assert Within.run(gate, Stub.never()) is merged
 
 
 def test_the_owners_thread_calling_again_while_a_straggler_flies_waits_for_the_cache() -> None:
@@ -253,14 +258,14 @@ def test_the_owners_thread_calling_again_while_a_straggler_flies_waits_for_the_c
     owner_started.wait(5)
     return importing.run()
 
-  crew = Crew()
+  racer = Racer(timeout=10)
   with importing.installed():
-    crew.start('owner', own)
-    crew.start('importer', import_mid_flight)
-    crew.join()
+    racer.start('owner', own)
+    racer.start('importer', import_mid_flight)
+    racer.join()
 
-  assert crew.errors == {}
-  cached = gate.run(ROOT, discover=Stub.never())
+  assert racer.raised == {}
+  cached = Within.run(gate, Stub.never())
   assert second_call.calls == 0
   assert seen['second'] is cached
   assert cached['registered_adapters'] == ('gate_root.a.Owned', 'gate_root.outside.Late')
@@ -271,20 +276,20 @@ def test_concurrent_entry_point_callers_wait_for_one_run_and_share_its_report() 
   report = Runs.report(adapters=('gate_root.Apple',))
   only_run = Stub(report, before=partial(time.sleep, 0.05))  # keep the flight open for the rest
   barrier = Barrier(8)
-  crew = Crew()
+  racer = Racer(timeout=10)
 
   def call() -> ReportMap:
     barrier.wait()
     return gate.run(ROOT, discover=only_run)
 
   for index in range(8):
-    crew.start(f'caller-{index}', call)
-  crew.join()
+    racer.start(f'caller-{index}', call)
+  racer.join()
 
-  assert crew.errors == {}
+  assert racer.raised == {}
   assert only_run.calls == 1
-  assert all(result is crew.results['caller-0'] for result in crew.results.values())
-  assert crew.results['caller-0'] == report
+  assert all(result is racer.results['caller-0'] for result in racer.results.values())
+  assert racer.results['caller-0'] == report
 
 
 def test_owner_failure_wakes_the_waiters_who_each_retry_and_nothing_is_cached() -> None:
@@ -297,8 +302,8 @@ def test_owner_failure_wakes_the_waiters_who_each_retry_and_nothing_is_cached() 
     release.wait(5)
     owner_failed.set()
 
-  crew = Crew()
-  crew.start(
+  racer = Racer(timeout=10)
+  racer.start(
     'owner', partial(gate.run, ROOT, discover=Stub(RuntimeError('owner'), before=park_owner))
   )
   assert started.wait(5)
@@ -310,12 +315,12 @@ def test_owner_failure_wakes_the_waiters_who_each_retry_and_nothing_is_cached() 
     for index in range(3)
   }
   for name, stub in waiters.items():
-    crew.start(name, partial(gate.run, ROOT, discover=stub))
+    racer.start(name, partial(gate.run, ROOT, discover=stub))
   time.sleep(0.1)  # let the waiters reach the flight; the assertions hold either way
   release.set()
-  crew.join()
+  racer.join()
 
-  assert {name: str(error) for name, error in crew.errors.items()} == {
+  assert {name: str(error) for name, error in racer.raised.items()} == {
     'owner': 'owner',
     'waiter-0': 'waiter-0',
     'waiter-1': 'waiter-1',
@@ -325,7 +330,7 @@ def test_owner_failure_wakes_the_waiters_who_each_retry_and_nothing_is_cached() 
   assert [stub.calls for stub in waiters.values()] == [1, 1, 1]
   assert retried_after_failure == [True, True, True]
   fresh = Stub(Runs.report(adapters=('gate_root.Apple',)))
-  assert gate.run(ROOT, discover=fresh)['registered_adapters'] == ('gate_root.Apple',)
+  assert Within.run(gate, fresh)['registered_adapters'] == ('gate_root.Apple',)
   assert fresh.calls == 1
 
 
@@ -347,24 +352,25 @@ def test_an_import_time_caller_discovers_itself_and_the_owner_caches_the_merge()
   def import_mid_flight() -> object:
     owner_started.wait(5)
     try:
-      return importing.run()
+      imported: object = importing.run()
     finally:
       participant_left.set()
+    return imported
 
-  crew = Crew()
+  racer = Racer(timeout=10)
   with importing.installed():
-    crew.start('owner', partial(gate.run, ROOT, discover=owner))
-    crew.start('importer', import_mid_flight)
+    racer.start('owner', partial(gate.run, ROOT, discover=owner))
+    racer.start('importer', import_mid_flight)
     assert owner_started.wait(5)
     for index in range(3):
-      crew.start(f'waiter-{index}', partial(gate.run, ROOT, discover=never))
-    crew.join()
+      racer.start(f'waiter-{index}', partial(gate.run, ROOT, discover=never))
+    racer.join()
 
-  assert crew.errors == {}
-  cached = gate.run(ROOT, discover=never)
-  assert crew.results['importer'] is participant_report
-  assert crew.results['owner'] is cached
-  assert all(crew.results[f'waiter-{index}'] is cached for index in range(3))
+  assert racer.raised == {}
+  cached = Within.run(gate, never)
+  assert racer.results['importer'] is participant_report
+  assert racer.results['owner'] is cached
+  assert all(racer.results[f'waiter-{index}'] is cached for index in range(3))
   assert cached['registered_adapters'] == ('gate_root.b.Imported', 'gate_root.a.Owned')
   assert never.calls == 0
 
@@ -385,9 +391,10 @@ def test_an_import_time_caller_that_outlives_the_owner_caches_the_full_merge() -
 
   def own() -> ReportMap:
     try:
-      return gate.run(ROOT, discover=Stub(owner_report, before=park_owner))
+      owned: ReportMap = gate.run(ROOT, discover=Stub(owner_report, before=park_owner))
     finally:
       owner_left.set()
+    return owned
 
   importing = ImportingCall(
     'gate_import_straggler',
@@ -398,18 +405,18 @@ def test_an_import_time_caller_that_outlives_the_owner_caches_the_full_merge() -
     owner_started.wait(5)
     return importing.run()
 
-  crew = Crew()
+  racer = Racer(timeout=10)
   with importing.installed():
-    crew.start('owner', own)
-    crew.start('importer', import_mid_flight)
-    crew.join()
+    racer.start('owner', own)
+    racer.start('importer', import_mid_flight)
+    racer.join()
 
-  assert crew.errors == {}
-  cached = gate.run(ROOT, discover=Stub.never())
+  assert racer.raised == {}
+  cached = Within.run(gate, Stub.never())
   # The owner could not wait for the straggler, so it got the merge so far, uncached.
-  assert crew.results['owner'] == owner_report
-  assert crew.results['owner'] is not cached
-  assert crew.results['importer'] is participant_report
+  assert racer.results['owner'] == owner_report
+  assert racer.results['owner'] is not cached
+  assert racer.results['importer'] is participant_report
   assert cached['registered_adapters'] == ('gate_root.a.Owned', 'gate_root.outside.Late')
 
 
@@ -418,9 +425,95 @@ def test_clear_mid_flight_leaves_the_run_in_the_generation_it_started_in() -> No
   stale = Stub(Runs.report(adapters=('gate_root.Stale',)), before=gate.clear)
   fresh = Stub(Runs.report(adapters=('gate_root.Fresh',)))
 
-  stale_report = gate.run(ROOT, discover=stale)
-  fresh_report = gate.run(ROOT, discover=fresh)
+  stale_report = Within.run(gate, stale)
+  fresh_report = Within.run(gate, fresh)
 
   assert stale_report['registered_adapters'] == ('gate_root.Stale',)
   assert fresh_report['registered_adapters'] == ('gate_root.Fresh',)
   assert (stale.calls, fresh.calls) == (1, 1)
+
+
+def test_a_report_cached_between_the_two_reads_is_returned_not_rediscovered() -> None:
+  gate = BootstrapGate()
+  cached = Runs.report(adapters=('gate_root.Apple',))
+  gate._generation = gate._generation._replace(reports=LateCache(cached))
+  never = Stub.never()
+
+  assert Within.run(gate, never) is cached
+  assert never.calls == 0
+
+
+def test_a_keyboard_interrupt_in_the_owner_still_lands_the_flight() -> None:
+  # The gate catches BaseException on purpose: an Exception-only handler would leave the flight
+  # open after Ctrl-C, and every later caller would wait on it forever. The owner's thread stays
+  # alive until the later call is done, because a finished thread may hand its ident to the next
+  # one, which would then pass for a re-entry and never wait on the stuck flight at all. Nor can
+  # the owner run on the main thread: a regression that never boards would spin it forever.
+  gate = BootstrapGate()
+  failed, release = Event(), Event()
+
+  def own() -> None:
+    try:
+      gate.run(ROOT, discover=Stub(KeyboardInterrupt()))
+    finally:
+      failed.set()
+      release.wait(10)
+
+  later = Stub(Runs.report(adapters=('gate_root.Apple',)))
+  racer = Racer(timeout=10)
+  racer.start('owner', own)
+  try:
+    assert failed.wait(5)
+    landed: ReportMap = Within.run(gate, later)
+  finally:
+    release.set()
+    racer.join()
+
+  assert isinstance(racer.raised['owner'], KeyboardInterrupt)
+  assert landed['registered_adapters'] == ('gate_root.Apple',)
+  assert later.calls == 1
+
+
+def test_an_owner_failure_is_not_forgotten_when_a_straggler_leaves_last() -> None:
+  # The straggler's clean exit must not wash out the owner's failure, or its partial report would
+  # be cached as the whole bootstrap and no retry would ever run.
+  gate = BootstrapGate()
+  owner_started, joined, owner_left = Event(), Event(), Event()
+
+  def park_owner() -> None:
+    owner_started.set()
+    joined.wait(5)
+
+  def park_straggler() -> None:
+    joined.set()
+    owner_left.wait(5)
+
+  importing = ImportingCall(
+    'gate_import_failed_owner',
+    partial(
+      gate.run,
+      ROOT,
+      discover=Stub(Runs.report(adapters=('gate_root.Late',)), before=park_straggler),
+    ),
+  )
+
+  def own() -> None:
+    try:
+      gate.run(ROOT, discover=Stub(RuntimeError('owner'), before=park_owner))
+    finally:
+      owner_left.set()
+
+  def import_mid_flight() -> object:
+    owner_started.wait(5)
+    return importing.run()
+
+  racer = Racer(timeout=10)
+  with importing.installed():
+    racer.start('owner', own)
+    racer.start('importer', import_mid_flight)
+    racer.join()
+
+  assert {name: str(error) for name, error in racer.raised.items()} == {'owner': 'owner'}
+  retry = Stub(Runs.report(adapters=('gate_root.Retry',)))
+  assert Within.run(gate, retry)['registered_adapters'] == ('gate_root.Late', 'gate_root.Retry')
+  assert retry.calls == 1

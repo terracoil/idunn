@@ -9,7 +9,7 @@ from typing import Any, ClassVar
 
 from idunn.domain import (
   AdapterMetadata,
-  EngineSnapshot,
+  AdapterNotFoundError,
   InjectionCycleError,
   InvalidPortError,
   LifecycleEnum,
@@ -20,22 +20,21 @@ from idunn.util import KeyedLocks, QualifiedName
 
 from .construction_stack import ConstructionStack
 from .constructor_planner import ConstructorPlanner
+from .decorator_support import DecoratorSupport
 from .inversion_mapper import InversionMapper
 from .inversion_validator import InversionValidator
 from .port_registry import PortRegistry
-
-# One generation of singletons, swapped whole by clear(): the built instances, and one lock per
-# adapter class guarding its first build. A resolve captures it once, at entry, and hands it down.
-SingletonGeneration = tuple[dict[type[Any], Any], KeyedLocks[type[Any]]]
+from .singleton_generation import SingletonGeneration
 
 
 class InversionResolver:
   """Builds object graphs by filling each adapter's planned port parameters, recursively.
-  Choosing the adapter is the mapper's job and deciding which parameters are ports is the
+  Finding the active adapter is the mapper's job and deciding which parameters are ports is the
   :class:`ConstructorPlanner`'s; this class owns the recursion, the in-progress cycle stack, the
   cache of ``SINGLETON`` instances and the cache of constructor plans. ``@Invert`` wrappers and
   adapter constructors fill their parameters through the same :meth:`inject`, which is why an
-  optional port behaves identically in both.
+  optional port behaves identically in both, and the build and the cycle walk choose each edge
+  through the same ``_choose``, which is why the walk cannot see a graph the build would not.
   A ``SINGLETON`` is built once per generation even when threads race for it: a cache miss walks
   the graph for cycles holding nothing, then builds under that adapter's own lock and checks the
   cache again inside it. The warm path never locks, and unrelated singletons never queue on each
@@ -53,7 +52,7 @@ class InversionResolver:
   def __init__(self, mapper: InversionMapper) -> None:
     """Bind the resolver to the catalog it asks for adapter selections."""
     self._mapper: InversionMapper = mapper
-    self._generation: SingletonGeneration = ({}, KeyedLocks())
+    self._generation: SingletonGeneration = SingletonGeneration(instances={}, locks=KeyedLocks())
     # Per thread, the stack of the SINGLETON build now running, if any, for consumers built inside.
     self._building: ConstructionStack = ConstructionStack()
     # Per adapter class, filled on first build. No lock: a racing duplicate is an identical plan.
@@ -69,7 +68,7 @@ class InversionResolver:
     Swaps in new containers instead of emptying the old ones, so a build still running lands its
     instance in the generation it started in, which nobody reads any more.
     """
-    self._generation = ({}, KeyedLocks())
+    self._generation = SingletonGeneration(instances={}, locks=KeyedLocks())
     self._plans = {}
     with self._override_lock:
       self._overrides = None
@@ -91,18 +90,27 @@ class InversionResolver:
   def override(self, *, port: type[Any], key: str | None, instance: object) -> None:
     """Answer ``port`` and ``key`` with ``instance`` from now on, ahead of any adapter.
     Checked here rather than at use, so a bad stand-in fails at the line that installed it: a
-    class that is not a ``@Port`` raises :class:`InvalidPortError`, and an instance that does not
+    class that is not a ``@Port`` raises :class:`InvalidPortError`, a key that is not a ``str``
+    raises ``TypeError`` (no ``@Invert`` could ever ask for it), and an instance that does not
     satisfy the port raises :class:`InvalidAdapterError`, just as a built adapter would.
     """
     if not PortRegistry.is_port(port):
-      message = f'Cannot override a class that is not marked with @Port: {QualifiedName.of(port)}'
+      message: str = (
+        f'Cannot override a class that is not marked with @Port: {QualifiedName.of(port)}'
+      )
       raise InvalidPortError(message)
+    if key is not None and not isinstance(key, str):
+      message = f'Override key for {QualifiedName.of(port)} must be a str: {QualifiedName.of(key)}'
+      raise TypeError(message)
     InversionValidator.validate_instance(port=port, adapter=type(instance), instance=instance)
+    slot: SlotKey = (port, None if key is None else DecoratorSupport.plain_key(key))
     with self._override_lock:
-      self._overrides = MappingProxyType({**(self._overrides or {}), (port, key): instance})
+      self._overrides = MappingProxyType({**(self._overrides or {}), slot: instance})
 
-  def restore(self, snapshot: EngineSnapshot) -> None:
-    """Put back the snapshot's overrides and a copy of its singletons, as a whole new generation.
+  def restore(
+    self, *, instances: Mapping[type[Any], Any], overrides: Mapping[SlotKey, object]
+  ) -> None:
+    """Put back what :meth:`snapshot` returned: the overrides, and the singletons, freshly copied.
     The copy and the fresh locks are the point: a build racing the restore finishes into the
     generation it captured, which nobody reads any more, exactly as with :meth:`clear`. Overrides
     go back first because a resolve captures its generation once but reads overrides as it goes:
@@ -110,15 +118,15 @@ class InversionResolver:
     fake straight into the restored generation. Plans stay, since they depend only on the class.
     """
     with self._override_lock:
-      self._overrides = snapshot.overrides or None
-    self._generation = (dict(snapshot.instances), KeyedLocks())
+      self._overrides = overrides or None
+    self._generation = SingletonGeneration(instances=dict(instances), locks=KeyedLocks())
 
   def snapshot(self) -> tuple[Mapping[type[Any], Any], Mapping[SlotKey, object]]:
     """Return a read-only copy of this generation's singletons, and the overrides as they stand.
     Overrides are immutable, so they are shared; the singletons are copied because the live dict
     keeps filling up after the picture is taken.
     """
-    return MappingProxyType(dict(self._generation[0])), self._overrides or self._NO_OVERRIDES
+    return MappingProxyType(dict(self._generation.instances)), self._overrides or self._NO_OVERRIDES
 
   def _assert_acyclic(
     self,
@@ -143,7 +151,6 @@ class InversionResolver:
     self,
     *,
     metadata: AdapterMetadata,
-    port: type[Any],
     environment: str,
     stack: tuple[type[Any], ...],
     generation: SingletonGeneration,
@@ -158,14 +165,13 @@ class InversionResolver:
         for parameter in self._plan_for(adapter)
       }
     )
-    InversionValidator.validate_instance(port=port, adapter=adapter, instance=instance)
+    InversionValidator.validate_instance(port=metadata.port, adapter=adapter, instance=instance)
     return instance
 
   def _build_once(
     self,
     *,
     metadata: AdapterMetadata,
-    port: type[Any],
     environment: str,
     stack: tuple[type[Any], ...],
     generation: SingletonGeneration,
@@ -177,22 +183,41 @@ class InversionResolver:
     # TRANSIENT build cost ~10% of a warm transient resolve. A consumer made inside a transient
     # constructor therefore starts its path at the innermost singleton, which still covers every
     # lock this thread holds.
-    instances, locks = generation
+    instances: dict[type[Any], Any] = generation.instances
     self._assert_acyclic(
       metadata=metadata, environment=environment, stack=stack, instances=instances
     )
-    with locks.for_key(metadata.adapter):
+    with generation.locks.for_key(metadata.adapter):
       instance: Any = instances.get(metadata.adapter, self._MISSING)
       if instance is self._MISSING:
         with self._building.publishing((*stack, metadata.adapter)):
           instance = instances[metadata.adapter] = self._build(
-            metadata=metadata,
-            port=port,
-            environment=environment,
-            stack=stack,
-            generation=generation,
+            metadata=metadata, environment=environment, stack=stack, generation=generation
           )
     return instance
+
+  def _choose(
+    self, *, parameter: ParameterPlan, environment: str
+  ) -> tuple[object, AdapterMetadata | None]:
+    # The selection rule, written once for the build (_inject) and the walk (_follow): a stand-in
+    # answers ahead of selection, else the slot's active adapter, if any. Returns the stand-in (or
+    # _MISSING) and the adapter to build (or None); what a parameter with neither gets, its
+    # fallback or an AdapterNotFoundError, is left to each caller, since the walk must not raise.
+    port: type[Any] = parameter.port
+    if not PortRegistry.is_port(port):
+      message: str = (
+        f'Cannot resolve a class that is not marked with @Port: {QualifiedName.of(port)}'
+      )
+      raise InvalidPortError(message)
+    overrides: Mapping[SlotKey, object] | None = self._overrides  # None outside a Harness block
+    stand_in: object = (
+      self._MISSING if overrides is None else overrides.get((port, parameter.key), self._MISSING)
+    )
+    return stand_in, (
+      self._mapper.find(port=port, key=parameter.key, environment=environment)
+      if stand_in is self._MISSING
+      else None
+    )
 
   @staticmethod
   def _cycle(path: tuple[type[Any], ...]) -> InjectionCycleError:
@@ -208,17 +233,11 @@ class InversionResolver:
     environment: str,
     instances: dict[type[Any], Any],
   ) -> bool:
-    # One edge of the walk, chosen exactly as _inject and _resolve would choose it. An override
-    # and a tolerant parameter with nothing active have no edge: the build hands over the stand-in
-    # or the fallback without building anything. A built singleton is a leaf, because the build
-    # will not look inside it either.
-    overridden: bool = self._overridden(parameter)
-    found: AdapterMetadata | None = (
-      None
-      if overridden
-      else self._mapper.find(port=parameter.port, key=parameter.key, environment=environment)
-    )
-    halted: bool = found is None and not (parameter.tolerant or overridden)
+    # One edge of the walk, chosen by the build's own _choose. A stand-in and a tolerant parameter
+    # with nothing active have no edge: the build hands over the stand-in or the fallback without
+    # building anything. A built singleton is a leaf, because the build will not look inside it.
+    stand_in, found = self._choose(parameter=parameter, environment=environment)
+    halted: bool = found is None and stand_in is self._MISSING and not parameter.tolerant
     if found is not None and found.adapter in path:
       raise self._cycle((*path, found.adapter))
     if found is not None and found.adapter not in instances and found.adapter not in done:
@@ -239,67 +258,55 @@ class InversionResolver:
     stack: tuple[type[Any], ...],
     generation: SingletonGeneration,
   ) -> Any:
-    # A `Port | None` parameter, or any port parameter with a default, survives a missing adapter,
-    # unless an override stands in for it: then it gets the stand-in like anyone else.
-    absent: bool = (
-      parameter.tolerant
-      and self._mapper.find(port=parameter.port, key=parameter.key, environment=environment) is None
-      and not self._overridden(parameter)
-    )
-    return (
-      parameter.fallback
-      if absent
-      else self._resolve(
-        port=parameter.port,
-        key=parameter.key,
-        environment=environment,
-        stack=stack,
-        generation=generation,
+    # The build's half of the rule: a stand-in as is, the active adapter built or cached, and with
+    # neither, the fallback for a `Port | None` or defaulted parameter, else AdapterNotFoundError.
+    stand_in, found = self._choose(parameter=parameter, environment=environment)
+    value: Any = stand_in
+    if found is not None:
+      value = self._instance(
+        metadata=found, environment=environment, stack=stack, generation=generation
       )
-    )
+    elif stand_in is self._MISSING and parameter.tolerant:
+      value = parameter.fallback
+    elif stand_in is self._MISSING:
+      raise self._missing(parameter=parameter, environment=environment)
+    return value
 
-  def _overridden(self, parameter: ParameterPlan) -> bool:
-    overrides: Mapping[SlotKey, object] | None = self._overrides
-    return overrides is not None and (parameter.port, parameter.key) in overrides
-
-  def _plan_for(self, adapter: type[Any]) -> tuple[ParameterPlan, ...]:
-    plan: tuple[ParameterPlan, ...] | None = self._plans.get(adapter)
-    if plan is None:
-      plan = ConstructorPlanner.plan_adapter(
-        adapter, keyword_only=ConstructorPlanner.KEYWORD_ONLY_PORTS
-      )
-      self._plans[adapter] = plan  # only a plan that worked is kept; a failure retries next time
-    return plan
-
-  def _resolve(
+  def _instance(
     self,
     *,
-    port: type[Any],
-    key: str | None,
+    metadata: AdapterMetadata,
     environment: str,
     stack: tuple[type[Any], ...],
     generation: SingletonGeneration,
   ) -> Any:
-    if not PortRegistry.is_port(port):
-      message = f'Cannot resolve a class that is not marked with @Port: {QualifiedName.of(port)}'
-      raise InvalidPortError(message)
-    overrides: Mapping[SlotKey, object] | None = self._overrides  # None outside a Harness block
-    if overrides is not None and (port, key) in overrides:
-      instance: Any = overrides[(port, key)]
-    else:
-      metadata: AdapterMetadata = self._mapper.select(port=port, key=key, environment=environment)
-      if metadata.adapter in stack:
-        raise self._cycle((*stack, metadata.adapter))
-      instance = generation[0].get(metadata.adapter, self._MISSING)  # the warm path: no lock
-      if instance is self._MISSING and metadata.lifecycle == LifecycleEnum.SINGLETON:
-        instance = self._build_once(
-          metadata=metadata, port=port, environment=environment, stack=stack, generation=generation
-        )
-      elif instance is self._MISSING:
-        instance = self._build(
-          metadata=metadata, port=port, environment=environment, stack=stack, generation=generation
-        )
+    if metadata.adapter in stack:
+      raise self._cycle((*stack, metadata.adapter))
+    instance: Any = generation.instances.get(metadata.adapter, self._MISSING)  # warm: no lock
+    if instance is self._MISSING and metadata.lifecycle == LifecycleEnum.SINGLETON:
+      instance = self._build_once(
+        metadata=metadata, environment=environment, stack=stack, generation=generation
+      )
+    elif instance is self._MISSING:
+      instance = self._build(
+        metadata=metadata, environment=environment, stack=stack, generation=generation
+      )
     return instance
+
+  @staticmethod
+  def _missing(*, parameter: ParameterPlan, environment: str) -> AdapterNotFoundError:
+    detail: str = f' with key {parameter.key!r}' if parameter.key is not None else ''
+    return AdapterNotFoundError(
+      f'No active adapter registered for port {QualifiedName.of(parameter.port)}{detail} '
+      f'in {environment!r}.'
+    )
+
+  def _plan_for(self, adapter: type[Any]) -> tuple[ParameterPlan, ...]:
+    plan: tuple[ParameterPlan, ...] | None = self._plans.get(adapter)
+    if plan is None:
+      plan = ConstructorPlanner.plan_adapter(adapter)
+      self._plans[adapter] = plan  # only a plan that worked is kept; a failure retries next time
+    return plan
 
   def _walk(
     self,

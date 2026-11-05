@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Protocol, TypeVar
 
 import pytest
+
 from idunn.util import QualifiedName
 
 T_co = TypeVar('T_co', covariant=True)

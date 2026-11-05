@@ -5,7 +5,7 @@ from __future__ import annotations
 import dataclasses
 from collections.abc import Callable, Iterator, Mapping
 from inspect import Parameter
-from typing import Any, ClassVar, NoReturn, get_type_hints
+from typing import Any, NoReturn, get_type_hints
 
 from idunn.domain import (
   FunctionShape,
@@ -31,12 +31,6 @@ class ConstructorPlanner:
   adapter constructors are exempt, since the resolver passes keywords anyway).
   """
 
-  # Port-annotated parameters of an @Invert function are keyword-only, so a positional argument can
-  # never land in one. Where the rule lives, not a toggle: both wrappers read ports from kwargs
-  # alone, so with it off a port passed positionally would be injected over and then collide.
-  # Undecorated adapter constructors are exempt, because the resolver passes every port by keyword.
-  KEYWORD_ONLY_PORTS: ClassVar[bool] = True
-
   @staticmethod
   def check_shape(function: Callable[..., Any], declaration: InvertDeclaration) -> FunctionShape:
     """Apply the shape rules to an ``@Invert`` target and return its shape.
@@ -47,7 +41,7 @@ class ConstructorPlanner:
     would be a plain function where a descriptor belongs, and fail only when called.
     """
     if isinstance(function, (staticmethod, classmethod)):
-      message = (
+      message: str = (
         f'@Invert() must go beneath @{type(function).__name__}, not above it: '
         f'{QualifiedName.of(function)}'
       )
@@ -79,28 +73,30 @@ class ConstructorPlanner:
     *,
     shape: FunctionShape,
     declaration: InvertDeclaration,
-    keyword_only: bool,
   ) -> tuple[ParameterPlan, ...]:
     """Plan the port parameters of ``function`` in signature order, applying the annotation rules.
     Raises ``NameError`` while a hint is still a forward reference; callers that can wait (see
-    :class:`LazyPlan`) wait.
+    :class:`LazyPlan`) wait. Port parameters must be keyword-only, always: both ``@Invert``
+    wrappers read ports from ``kwargs`` alone, so a port passed positionally would be injected
+    over and then collide with itself.
     """
     return cls._ports(
       function,
       shape=shape,
       declaration=declaration,
-      keyword_only=keyword_only,
+      keyword_only=True,
       hints=get_type_hints(function),
     )
 
   @classmethod
-  def plan_adapter(cls, adapter: type[Any], *, keyword_only: bool) -> tuple[ParameterPlan, ...]:
+  def plan_adapter(cls, adapter: type[Any]) -> tuple[ParameterPlan, ...]:
     """Plan an adapter constructor for the resolver, honouring its own ``@Invert`` if it has one.
     An undecorated or plain ``@Invert()`` constructor resolves unkeyed. Every other named
     parameter needs a default, since Idunn injects ports and never values
     (``MissingTypeHintError``), and a port must not be positional-only, since the resolver passes
     keywords (``TypeError``). A constructor with no code object (``object.__init__``, a builtin
-    base) has nothing to inject. The keyword-only rule, when on, binds decorated constructors only.
+    base) has nothing to inject. The keyword-only rule binds decorated constructors only: the
+    resolver passes every port by keyword, so an undecorated one has no wrapper to confuse.
     """
     init: Callable[..., Any] = adapter.__init__
     found: FunctionShape | None = FunctionShape.of(init)
@@ -114,7 +110,7 @@ class ConstructorPlanner:
         init,
         shape=shape,
         declaration=declaration if declaration is not None else InvertDeclaration(),
-        keyword_only=keyword_only and declaration is not None,
+        keyword_only=declaration is not None,
         hints=hints,
       )
       cls._check_adapter_rest(adapter, shape=shape, hints=hints, plans=plans)
@@ -133,7 +129,7 @@ class ConstructorPlanner:
     planned: set[str] = {plan.name for plan in plans}
     for name in shape.named:
       if name in planned and name in shape.positional_only:
-        message = (
+        message: str = (
           f'{owner}.{name} is a positional-only port, but Idunn passes ports by keyword: '
           "move it after the '/'"
         )
@@ -156,7 +152,7 @@ class ConstructorPlanner:
     key: str | None = declaration.keys.get(name)
     owner: str = QualifiedName.of(function)
     if mapped is not None and annotated is not None:
-      message = (
+      message: str = (
         f'@Invert on {owner} maps {name!r} to {QualifiedName.of(mapped)}, but it is already '
         f'annotated with {QualifiedName.of(annotated)}: one parameter, one contract. Drop the map '
         'entry or the annotation.'

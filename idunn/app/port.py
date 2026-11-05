@@ -29,7 +29,7 @@ class Port:
     # typing.is_protocol is 3.13+; the private flag is the only check available on 3.11. The class
     # test comes first because ``Repo[int]`` forwards the flag from the Protocol it parameterizes.
     if not (isinstance(target, type) and getattr(target, '_is_protocol', False)):
-      message = f'@Port can only be applied to Protocol classes: {QualifiedName.of(target)}'
+      message: str = f'@Port can only be applied to Protocol classes: {QualifiedName.of(target)}'
       raise InvalidPortError(message)
     PortRegistry.mark(target)
     return runtime_checkable(target)

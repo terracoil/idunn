@@ -199,6 +199,7 @@ itself takes no arguments, so `reset()` is the one place to choose; `Idunn(envir
 raises `TypeError` rather than being honored once and ignored forever after. Names are
 stripped and lowercased with `_` turned into `-`, so `My_Env` and `my-env` are the same place. A
 blank name means `local`, and the result must match `[a-z0-9][a-z0-9.-]*` without containing `..`.
+`Idunn().environment` reports the name in force, normalized.
 
 ### By key
 
@@ -226,6 +227,10 @@ If `email` and `sms` are the only adapters for `NotifierPort`, a plain `@Invert(
 `NotifierPort` raises `AdapterNotFoundError`: there is no unkeyed apple in the basket. Pick one with
 `keys=`, or register an unkeyed adapter as the default.
 
+A key is a `str`, and a `StrEnum` member is one. Idunn keeps it as its plain value, so `'sms'` and
+`Channel.SMS` find the same adapter, and `describe()` and error messages say `'sms'` rather than
+`<Channel.SMS: 'sms'>`.
+
 ### Collisions
 
 A key only has to be unique within an environment, so one key can name different adapters in
@@ -249,7 +254,8 @@ unlucky request.
 Two `@Adapter` lines on one class collide sooner still: the second raises `InvalidAdapterError` at
 import, because only one declaration could ever win, so one of the two lines was always wrong. A
 subclass may wear its own `@Adapter`; it is a different class and registers as one, while an
-undecorated subclass stays invisible to discovery.
+undecorated subclass stays invisible to discovery, and `Harness.install` refuses it for the same
+reason: it inherits the attribute, not the badge.
 
 ---
 
@@ -349,13 +355,14 @@ Environment: test
 
 my_app.ports.PaymentPort
   selected: my_app.adapters.fake.FakePaymentAdapter
-  - my_app.adapters.stripe.StripePaymentAdapter key=None envs=prod singleton
   - my_app.adapters.fake.FakePaymentAdapter key=None envs=ci,test
+  - my_app.adapters.stripe.StripePaymentAdapter key=None envs=prod singleton
 ```
 
-`envs=*` marks an adapter active everywhere. A port with no active unkeyed adapter shows
-`selected: <none>`: its adapters may all be keyed, all belong to other environments, or not exist
-yet.
+Adapters are listed in registration order, which for discovery is sorted module order: `fake` before
+`stripe`, whatever the environment. `envs=*` marks an adapter active everywhere. A port with no
+active unkeyed adapter shows `selected: <none>`: its adapters may all be keyed, all belong to other
+environments, or not exist yet.
 
 ---
 
@@ -444,7 +451,9 @@ def test_feast_with_the_real_thing() -> None:
 - On exit, error or not, a block puts back exactly what it found: registrations, singletons,
   overrides, `bootstrap` reports and the environment. A singleton built against a fake leaves
   with the fake, and a `bootstrap` inside an install leaves no report vouching for registrations
-  that are gone. Blocks nest and unwind last in, first out.
+  that are gone. Blocks nest and unwind last in, first out. Driven by hand out of that order, an
+  outer block's `__exit__` raises `RuntimeError` and restores nothing, and the inner block's exit
+  then puts back what the outer one found, so neither block's wiring outlives the pair.
 - An override reaches what is built inside its block. A singleton built before the block keeps the
   dependency it was built with, so open the block before anything builds it. A `reset()` inside the
   block is no shortcut: it drops the override along with the singleton.
@@ -469,19 +478,20 @@ class below:
 | Class | Raised when |
 |---|---|
 | `InvalidPortError` | `@Port` is applied to anything but a Protocol (`Port(5)` included), an adapter names an unmarked port, an `@Invert` map value is not a port, a parameter is both port-annotated and mapped, `keys` names a parameter that is not a port, or `Harness.override` is handed something that is not a port. |
-| `InvalidAdapterError` | `@Adapter` is applied to a non-class or twice to one class, two adapters collide (the discovery run or `Harness.install` that hits it registers nothing), or a built instance or a `Harness.override` stand-in does not satisfy its port. |
+| `InvalidAdapterError` | `@Adapter` is applied to a non-class or twice to one class, `Harness.install` is handed a class that never wore `@Adapter` (an undecorated subclass of an adapter included), two adapters collide (the discovery run or `Harness.install` that hits it registers nothing), or a built instance or a `Harness.override` stand-in does not satisfy its port. |
 | `AdapterNotFoundError` | No active adapter exists for a requested port and the parameter is not optional. |
 | `DiscoveryError` | A module below the discovery root fails to import and `strict=True`, or the root package does not live in a directory (a zip, say), whatever `strict` says. |
 | `MissingTypeHintError` | An adapter constructor parameter without a default has no annotation, or one that is not a port. |
 | `InjectionCycleError` | Constructor resolution loops back on an adapter already under construction. A loop through a `SINGLETON` is found before anything is built. |
 
-A few mistakes are caught by plain Python exceptions instead: an invalid environment name or
-`lifecycle` string raises `ValueError`; bare `@Invert`, the `@Invert` shape mistakes listed under
-[the contract](#the-invert-contract-in-full), too many positional arguments to an `@Invert`
-constructor or function, a positional-only port on an adapter constructor and `Idunn(...)` with
-arguments raise `TypeError`; and a discovery root that will not import raises its own import
-error. Every Idunn message names the culprit as `module.QualName`, so two `Feast`s in two modules
-are never confused.
+A few mistakes are caught by plain Python exceptions instead: an invalid environment name (one that
+is not a `str` included) or `lifecycle` string raises `ValueError`; bare `@Invert`, the `@Invert`
+shape mistakes listed under [the contract](#the-invert-contract-in-full), an adapter key that is not
+a `str` (in `@Adapter`, `@Invert(keys=...)` or `Harness.override`; a `StrEnum` member is one), too
+many positional arguments to an `@Invert` constructor or function, a positional-only port on an
+adapter constructor and `Idunn(...)` with arguments raise `TypeError`; and a discovery root that
+will not import raises its own import error. Every Idunn message names the culprit as
+`module.QualName`, so two `Feast`s in two modules are never confused.
 
 ---
 
@@ -555,14 +565,19 @@ classes, there are no loose module-level functions, and every method has a singl
 guard clauses aside. The four layers (`app`, `domain`, `internal`, `util`) and their allowed import
 directions are enforced by `tests/test_architecture.py`, along with a fifth package, `testing`: it
 holds only the barrel that re-exports `Harness` from `app`, may import `app` alone, and no layer may
-import it, so production code cannot lean on test tooling even by accident. For a class-by-class
-map of the package see [`classes.md`](./classes.md).
+import it, so production code cannot lean on test tooling even by accident. The same file fails any
+module import cycle in `idunn/` or `examples/`, and, inside the package, a `..` relative import, a
+module path (`from idunn.domain import catalog` counts) or the root barrel, through which a back
+edge would otherwise slip past the matrix unseen. For a class-by-class map of the package see
+[`classes.md`](./classes.md).
 
 ### Running Idunn's own suite
 
 Day to day, `poetry run pytest` runs everything on the development interpreter, 3.13.16 in the
-in-project `.venv`. Tests that drive a generated package end to end carry the `integration`
-marker, and `bin/devtool` wraps the lot:
+in-project `.venv`. The end-to-end files, `tests/test_integration.py` (the public API over
+generated packages) and `tests/test_examples.py` (every example, run as a script), carry the
+`integration` marker; the discovery and bootstrap tests write packages too, but each pins one
+rule, so they count as unit tests. `bin/devtool` wraps the lot:
 
 ```bash
 poetry run bin/devtool test unit          # everything not marked integration
@@ -590,12 +605,16 @@ poetry run ruff format --check . && poetry run ruff check . && poetry run mypy
 poetry run bin/devtool test all
 ```
 
-Thread tests start their targets through `Racer` (`tests/_support.py`): daemon threads released
-by one barrier, with any thread still alive after the timeout recorded as a `TimeoutError`, so a
-deadlock fails the test instead of hanging the suite until someone notices it is lunchtime. The
-`eager_switching` fixture sets `sys.setswitchinterval(1e-6)` for races the GIL would otherwise
-hide. A race that passed once has merely not been caught yet, so run the concurrency tests ten
-times per interpreter before calling them green:
+Every thread a test starts goes through `Racer` (`tests/_support.py`): daemon threads that share one
+deadline, with any thread still alive after it recorded as a `TimeoutError`, so a deadlock fails the
+test instead of hanging the suite until someone notices it is lunchtime. `run` releases its targets
+together behind one barrier, `start` and `join` let a test stagger them, and `call` runs a single
+call that might hang, such as a bootstrap-gate call a regression could park forever on the main
+thread. A loop that never waits slips past `Racer`, so `pytest-timeout` (`timeout = 120` in
+`pyproject.toml`, clear of the 60 seconds an example subprocess may take) fails any test still
+running after two minutes. The `eager_switching` fixture sets `sys.setswitchinterval(1e-6)` for
+races the GIL would otherwise hide. A race that passed once has merely not been caught yet, so run
+the concurrency tests ten times per interpreter before calling them green:
 
 ```bash
 for _ in $(seq 10); do
