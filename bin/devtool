@@ -3,8 +3,8 @@
 
 Consolidates all development scripts into a single FreyjaCLI implementation.
 """
-# deprecated
 import glob
+import hashlib
 import json
 import os
 import re
@@ -21,7 +21,8 @@ from freyja import FreyjaCLI
 from freyja.help.help_formatter import HierarchicalHelpFormatter
 
 # Add the project root to the Python path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+REPO_ROOT: Path = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
 
 # Configure cache directories to use tmp/
 # os.environ.setdefault('RUFF_CACHE_DIR', str(project_src / 'tmp' / '.ruff_cache'))
@@ -52,7 +53,7 @@ class FreyjaDevTools:
   @classmethod
   def dig(cls, path: list[str | int]) -> Any:
     """Resolve a path into pyproject.toml and return the value found there."""
-    with open('pyproject.toml', 'rb') as f:
+    with open(REPO_ROOT / 'pyproject.toml', 'rb') as f:
       result: Any = tomllib.load(f)
     for component in path:
       if component not in result:
@@ -62,20 +63,16 @@ class FreyjaDevTools:
 
   @classmethod
   def get_project_src(cls) -> str:
-    """Get pyproject source root."""
-    with open('pyproject.toml', 'rb') as f:
-      proj_map: dict[str, Any] = tomllib.load(f)
-    try:
-      proj_root: str = proj_map['tool']['poetry']['packages'][0]['include']
-    except Exception as x:  # noqa: BLE001 — fall back to the project name
-      print(f'Error getting proj_root; falling back to project_name: {x}')
-      proj_root = cls.get_project_name()
-    return proj_root
+    """Return the repository root: where pyproject.toml lives, and where every command runs.
+    Not the package directory: Poetry finds ``idunn/`` by name, so pyproject lists no packages to
+    read it from, and a command run from inside the package finds no ``dist/`` or ``tmp/`` there.
+    """
+    return str(REPO_ROOT)
 
   @classmethod
   def get_project_name(cls) -> str:
     """Get project name from pyproject.toml."""
-    with open('pyproject.toml', 'rb') as f:
+    with open(REPO_ROOT / 'pyproject.toml', 'rb') as f:
       proj_map: dict[str, Any] = tomllib.load(f)
     return (
       proj_map['project']['name']
@@ -105,8 +102,8 @@ class FreyjaDevTools:
     self, command: str | list[str], **kwargs
   ) -> subprocess.CompletedProcess:
     """Execute subprocess with configured parameters."""
-    # Set default cwd if not provided
-    if 'cwd' not in kwargs:
+    # Default to the repo root; _run_command always passes cwd, often as None, so test for that.
+    if kwargs.get('cwd') is None:
       kwargs['cwd'] = self.project_src
     return subprocess.run(command, **kwargs)
 
@@ -267,7 +264,7 @@ class FreyjaDevTools:
       result_value = subprocess.CompletedProcess(command, 0, '', '') if capture_output else True
     else:
       try:
-        result_value = self._execute_subprocess(
+        completed: subprocess.CompletedProcess = self._execute_subprocess(
           command,
           shell=shell,
           check=check,
@@ -277,6 +274,9 @@ class FreyjaDevTools:
           cwd=cwd,
           env=env,
         )
+        # A finished process is truthy whatever its exit code, so an uncaptured run answers with
+        # its verdict, as promised above; otherwise every `if not _run_command(...)` is decorative.
+        result_value = completed if capture_output else completed.returncode == 0
       except (
         subprocess.CalledProcessError,
         subprocess.TimeoutExpired,
@@ -390,7 +390,8 @@ class FreyjaDevTools:
       parent = self.parent
       parent._print('🧹 Cleaning build artifacts and cache files...', 'info')
 
-      # Patterns to clean
+      # Patterns to clean, relative to the repo root wherever devtool runs from. Inside tmp/ only
+      # caches and scratch go: tmp/ itself, its .gitkeep and the test venvs stay (see _spared).
       patterns_to_remove: list[str] = [
         '**/*.pyc',
         '**/__pycache__',
@@ -402,7 +403,9 @@ class FreyjaDevTools:
         'dist',
         'generated*',
         'output*',
-        'tmp*',
+        'tmp?*',
+        'tmp/*',
+        'tmp/.*',
         '*.egg-info',
         '**/.mypy_cache',
         '**/.ruff_cache',
@@ -412,8 +415,8 @@ class FreyjaDevTools:
       removed_count = sum(
         1
         for pattern in patterns_to_remove
-        for path in glob.glob(pattern, recursive=True)
-        if self._remove_path(Path(path))
+        for path in glob.glob(pattern, root_dir=REPO_ROOT, recursive=True)
+        if not self._spared(Path(path)) and self._remove_path(REPO_ROOT / path)
       )
 
       if removed_count > 0:
@@ -438,12 +441,24 @@ class FreyjaDevTools:
       else:
         parent._print('Build failed!', 'error')
 
-    def lint(self, clean: bool = True, format: bool = False) -> bool:
-      """Perform linting of code; optionally formatting where possible."""
-      if clean and not self.parent._run_command('poetry run ruff clean', description='ruff clean'):
-        return False
-      lint_cmd: str = 'ruff format' if format else 'ruff check'
-      return self.parent._run_command(f'poetry run {lint_cmd}', description=lint_cmd)
+    @staticmethod
+    def _spared(relative: Path) -> bool:
+      """Whether clean leaves ``relative`` (to the repo root) alone: tmp/, its .gitkeep, the venvs.
+      The venvs under tmp/ (``test all``'s 3.14, the 3.11 floor) are minutes of pyenv and pip, not
+      cache, so neither they nor the bytecode inside them are clean's business. Nor is anything
+      glob found behind a symlinked directory: ``**`` follows links, and their targets live
+      outside the repo. The link itself still goes, through ``_remove_path``.
+      """
+      parts: tuple[str, ...] = relative.parts
+      linked: bool = any((REPO_ROOT / above).is_symlink() for above in list(relative.parents)[:-1])
+      return linked or (
+        parts[:1] == ('tmp',)
+        and (
+          len(parts) == 1
+          or parts[1] == '.gitkeep'
+          or (parts[1].startswith('venv-') and (REPO_ROOT / 'tmp' / parts[1]).is_dir())
+        )
+      )
 
     def _remove_path(self, path_obj: Path) -> bool:
       """Remove a single file or dir with error handling."""
@@ -451,12 +466,13 @@ class FreyjaDevTools:
       path_str = str(path_obj)
 
       try:
-        if path_obj.is_dir():
+        # A symlink goes as a link, dangling or not: rmtree refuses one, and its target is not ours.
+        if path_obj.is_dir() and not path_obj.is_symlink():
           if not parent.dry_run:
             shutil.rmtree(path_obj)
           if parent.verbose or parent.dry_run:
             print(f'Removed dir: {path_str}')
-        elif path_obj.is_file():
+        elif path_obj.is_symlink() or path_obj.is_file():
           if not parent.dry_run:
             path_obj.unlink()
           if parent.verbose or parent.dry_run:
@@ -768,7 +784,7 @@ class FreyjaDevTools:
     def _update_pyproject_version(self, version: str) -> bool:
       """Update version in pyproject.toml."""
       parent = self.parent
-      pyproject_path = Path('pyproject.toml')  # pyproject.toml is in project root, not package dir
+      pyproject_path = REPO_ROOT / 'pyproject.toml'  # the repo root, wherever devtool runs from
 
       try:
         with open(pyproject_path, 'r') as f:
@@ -906,255 +922,13 @@ class FreyjaDevTools:
           'info',
         )
 
-  class Quality:
-    """Code quality, linting, diagnostics, and completion operations."""
-
-    def __init__(self, parent) -> None:
-      """Initialize with parent FreyjaDevTools instance."""
-      self.parent: 'FreyjaDevTools' = parent
-
-    def lint(self, fix: bool = False, skip_mypy: bool = False) -> None:
-      """Run all linting and formatting tools, optionally auto-fixing issues.
-
-      :param fix: Auto-fix linting issues where possible
-      :param skip_mypy: Skip MyPy type checking if True
-      """
-      parent = self.parent
-      parent._print('🔍 Running code quality checks...', 'info')
-
-      success: bool = True
-
-      # Big bright message before linting
-      print(f'\n{parent.colors["yellow"]}{"=" * 60}{parent.colors["nc"]}')
-      print(f'{parent.colors["yellow"]}{"=" * 20} 🔍 LINTING... {"=" * 20}{parent.colors["nc"]}')
-      print(f'{parent.colors["yellow"]}{"=" * 60}{parent.colors["nc"]}\n')
-
-      # Run Ruff formatting first (establishes base code style)
-      ruff_format_cmd = 'poetry run ruff format .'
-      if not fix:
-        ruff_format_cmd += ' --check'
-      if not parent._run_command(ruff_format_cmd, '🎨 Running Ruff formatting...'):
-        success = False
-
-      # Run Ruff linting second (checks logical issues on formatted code)
-      ruff_cmd = 'poetry run ruff check .'
-      if fix:
-        ruff_cmd += ' --fix'
-      if not parent._run_command(ruff_cmd, '📝 Running Ruff linting...'):
-        success = False
-
-      # Run MyPy with strict type checking (unless skipped)
-      if not skip_mypy:
-        # Big bright message before MyPy
-        print(f'\n{parent.colors["blue"]}{"=" * 60}{parent.colors["nc"]}')
-        print(f'{parent.colors["blue"]}{"=" * 18} 🔧 RUNNING MYPY {"=" * 18}{parent.colors["nc"]}')
-        print(f'{parent.colors["blue"]}{"=" * 60}{parent.colors["nc"]}\n')
-
-        # Use actual package name instead of git repo name
-        package_name = parent.project_src  # The actual Python package name
-        mypy_cmd = f'poetry run mypy {package_name}'
-        # Generate reports if directories exist
-        reports_dir = Path(parent.project_src) / 'reports' / 'mypy'
-        if reports_dir.exists():
-          mypy_cmd += f' --html-report {reports_dir} --linecount-report {reports_dir} --linecoverage-report {reports_dir}'
-        if not parent._run_command(mypy_cmd, '🔧 Running MyPy type checking...'):
-          success = False
-      else:
-        parent._print('⏭️  Skipping MyPy type checking (--skip-mypy)', 'info')
-
-      if success:
-        parent._print('All code quality checks passed!', 'success')
-        sys.exit(0)
-      else:
-        parent._print('Some code quality checks failed!', 'error')
-        sys.exit(1)
-
-    def completion(self, examples_only: bool = False) -> None:
-      """Test shell completion functionality, optionally just examples."""
-      parent = self.parent
-      parent._print('🔧 Testing shell completion functionality...', 'info')
-
-      # Set up environment
-      os.environ['PYTHONPATH'] = str(parent.project_src)
-      os.chdir(parent.project_src)
-
-      tests_passed: int = 0
-      tests_failed: int = 0
-      critical_failures: int = 0
-
-      def run_completion_test(
-        test_name: str, test_command: str, expected_pattern: str, critical: bool = False
-      ) -> bool:
-        nonlocal tests_passed, tests_failed, critical_failures
-
-        test_result: bool = False
-
-        if parent.verbose:
-          print(f'Running test: {test_name}')
-          print(f'Command: {test_command}')
-
-        result = parent._run_command(shlex.split(test_command), capture_output=True, timeout=10)
-
-        if isinstance(result, subprocess.CompletedProcess):
-          if result.returncode == 0 and (
-            expected_pattern in result.stdout or expected_pattern in result.stderr
-          ):
-            if parent.verbose:
-              parent._print(f'✅ {test_name}', 'success')
-            tests_passed += 1
-            test_result = True
-          else:
-            parent._print(f'❌ {test_name}', 'error')
-            if parent.verbose:
-              print(f'Expected pattern: {expected_pattern}')
-              if hasattr(result, 'stdout'):
-                print(f'Stdout: {result.stdout[:200]}')
-              if hasattr(result, 'stderr'):
-                print(f'Stderr: {result.stderr[:200]}')
-            tests_failed += 1
-            if critical:
-              critical_failures += 1
-        else:
-          # Timeout or other error
-          parent._print(f'⏰ {test_name} - TIMEOUT or ERROR', 'error')
-          tests_failed += 1
-          if critical:
-            critical_failures += 1
-
-        return test_result
-
-      # Test basic completion functionality
-      if not examples_only:
-        parent._print('Testing basic completion system...', 'info')
-
-        # Test help completion
-        run_completion_test(
-          'Help completion', 'python examples/cls_example --help', 'usage:', critical=True
-        )
-
-        # Test command completion
-        run_completion_test(
-          'Command completion',
-          'python examples/cls_example completion install',
-          'completion',
-          critical=False,
-        )
-
-      # Test examples completion
-      parent._print('Testing examples completion...', 'info')
-
-      # Test cls_example basic functionality
-      run_completion_test(
-        'cls_example help', 'python examples/cls_example --help', 'usage:', critical=True
-      )
-
-      # Test cls_example command execution
-      run_completion_test(
-        'cls_example command execution',
-        'python examples/cls_example file-operations--process-single --input-file test.txt --dry-run',
-        'test.txt',
-        critical=False,
-      )
-
-      # Test multi-class example
-      run_completion_test(
-        'multi_class_example help',
-        'python examples/multi_class_example --help',
-        'usage:',
-        critical=False,
-      )
-
-      # Print results
-      total_tests: int = tests_passed + tests_failed
-      parent._print(f'Completion test results: {tests_passed}/{total_tests} passed', 'info')
-
-      if critical_failures > 0:
-        parent._print(f'❌ {critical_failures} critical failures detected!', 'error')
-      elif tests_failed > 0:
-        parent._print(f'⚠️  {tests_failed} non-critical tests failed', 'warning')
-      else:
-        parent._print('All completion tests passed!', 'success')
-
-    def diagnose(self, include_env: bool = True, include_completion: bool = True) -> None:
-      """Run comprehensive diagnostic analysis for development issues."""
-      parent = self.parent
-      parent._print('🔍 Running comprehensive diagnostic analysis...', 'info')
-
-      if include_env:
-        parent._print('=== Environment Variable Analysis ===', 'info')
-        print(f'Current shell: {os.environ.get("SHELL", "Unknown")}')
-        print(f'Current PID: {os.getpid()}')
-        print()
-
-        # Check project-related environment variables
-        project_vars: dict[str, str] = {
-          k: v
-          for k, v in os.environ.items()
-          if parent.project_name.lower() in k.lower() or 'comp_' in k.lower()
-        }
-        if project_vars:
-          print(f'{parent.project_name.capitalize()} completion environment variables:')
-          for k, v in project_vars.items():
-            print(f'  {k}={v}')
-        else:
-          print(f'No {parent.project_name.capitalize()} completion environment variables found')
-        print()
-
-      if include_completion:
-        parent._print('=== Completion System Analysis ===', 'info')
-
-        # Test completion system availability
-        result = parent._run_command(
-          ['python', 'examples/cls_example', 'completion', '--help'], capture_output=True, timeout=5
-        )
-        if isinstance(result, subprocess.CompletedProcess) and result.returncode == 0:
-          parent._print('Completion system is available', 'success')
-        else:
-          parent._print('Completion system unavailable or broken', 'error')
-
-        # Test shell-specific completion
-        shell: str = os.environ.get('SHELL', '')
-        if 'bash' in shell:
-          parent._run_command(
-            f"complete -p | grep -i {parent.project_name} || echo 'No bash completion found'",
-            'Bash completion status:',
-          )
-        elif 'zsh' in shell:
-          parent._run_command(
-            f"compdef | grep -i {parent.project_name} || echo 'No zsh completion found'",
-            'Zsh completion status:',
-          )
-
-        print()
-
-      # Python environment check
-      parent._print('=== Python Environment ===', 'info')
-      parent._run_command('poetry run python --version', 'Python version:')
-      parent._run_command(
-        f'poetry run python -c \'import {parent.project_name}; print(f"{parent.project_name.capitalize()} module: {{{parent.project_name}.__file__}}")\'',
-        f'{parent.project_name.capitalize()} module location:',
-      )
-
-      # Project structure check
-      parent._print('=== Project Structure ===', 'info')
-      important_files: list[str] = [
-        'pyproject.toml',
-        f'{parent.project_name}/__init__.py',
-        'examples/cls_example',
-        'examples/multi_class_example',
-      ]
-
-      for file_path in important_files:
-        full_path: Path = Path(parent.project_src) / file_path
-        if full_path.exists():
-          parent._print(f'✅ {file_path} exists', 'success')
-        else:
-          parent._print(f'❌ {file_path} missing', 'error')
-
-      parent._print('Diagnostic analysis complete!', 'success')
-
   class Test:
-    """Testing operations."""
+    """Testing and linting operations."""
+
+    # `test all` repeats the suite on this Python, where PEP 649 defers annotations: the two
+    # contract tests that need it skip on the project interpreter and only ever run here.
+    LATEST_MINOR: str = '3.14'
+    LATEST_VENV: Path = Path('tmp') / f'venv-{LATEST_MINOR}'
 
     def __init__(
       self,
@@ -1171,8 +945,8 @@ class FreyjaDevTools:
       self.pattern: str = pattern
       self.verbose: bool = verbose
 
-    def _build_test_cmd(self, test_mark: str) -> list[str]:
-      """Build pytest command with common options and specified test mark."""
+    def _build_test_cmd(self, test_mark: str | None = None) -> list[str]:
+      """Build the poetry pytest command; ``test_mark`` is a ``-m`` expression, or None for all."""
       parent = self.parent
       cmd_parts: list[str] = ['poetry', 'run', 'pytest']
 
@@ -1181,62 +955,262 @@ class FreyjaDevTools:
           [f'--cov={parent.project_name}', '--cov-report=term-missing', '--cov-report=html']
         )
 
+      return cmd_parts + self._pytest_options(test_mark)
+
+    @staticmethod
+    def _passed(result: bool | CompletedProcess) -> bool:
+      """Whether a command succeeded: a finished process is truthy whatever its exit code."""
+      return result is True or (isinstance(result, CompletedProcess) and result.returncode == 0)
+
+    def _pytest_options(self, test_mark: str | None = None) -> list[str]:
+      """The options every interpreter's run shares; coverage belongs to the poetry run alone."""
+      options: list[str] = []
+
       if self.verbose:
-        cmd_parts.append('-sv')
+        options.append('-sv')
 
       if self.parallel:
-        cmd_parts.append('-n auto')
+        options.extend(['-n', 'auto'])
 
-      cmd_parts.extend(['-m', test_mark])
+      if test_mark is not None:
+        options.extend(['-m', test_mark])
 
       if self.pattern:
-        cmd_parts.extend(['-k', self.pattern])
+        options.extend(['-k', self.pattern])
 
-      return cmd_parts
+      return options
+
+    def _report(self, label: str, passed: bool) -> None:
+      """Print one interpreter's verdict, so two runs never blur into one."""
+      self.parent._print(
+        f'{label}: {"passed" if passed else "FAILED"}', 'success' if passed else 'error'
+      )
+
+    def _project_python(self) -> str:
+      """Name the poetry interpreter by its version, or '?' with none to ask (a dry run)."""
+      found = self.parent._run_command(
+        ['poetry', 'run', 'python', '-c', 'import platform; print(platform.python_version())'],
+        capture_output=True,
+        cwd=str(REPO_ROOT),
+      )
+      version: str = found.stdout.strip() if isinstance(found, CompletedProcess) else ''
+      return f'Python {version or "?"} (poetry)'
+
+    def _newest_installed(self) -> str | None:
+      """Return the newest CPython 3.14.x pyenv has; free-threaded ``t`` builds need not apply."""
+      listed = self.parent._run_command(['pyenv', 'versions', '--bare'], capture_output=True)
+      stdout: str = listed.stdout if isinstance(listed, CompletedProcess) else ''
+      pattern: re.Pattern[str] = re.compile(rf'{re.escape(self.LATEST_MINOR)}\.\d+')
+      versions: list[str] = [
+        line.strip() for line in stdout.splitlines() if pattern.fullmatch(line.strip())
+      ]
+      return max(versions, key=lambda version: tuple(map(int, version.split('.'))), default=None)
+
+    def _latest_version(self) -> str | None:
+      """Pick the newest pyenv 3.14, installing pyenv's latest 3.14 first when there is none."""
+      parent = self.parent
+      version: str | None = self._newest_installed()
+      if version is None:
+        parent._print(
+          f'No Python {self.LATEST_MINOR} under pyenv; installing the latest...', 'warning'
+        )
+        parent._run_command(['pyenv', 'install', '--skip-existing', self.LATEST_MINOR])
+        version = self._newest_installed() or (self.LATEST_MINOR if parent.dry_run else None)
+      return version
+
+    def _latest_venv(self, version: str) -> Path | None:
+      """Return the 3.14 venv's python, rebuilt if it runs another version, with the project in it.
+      Reinstalls only when the venv is new or ``pyproject.toml`` changed since the last install,
+      which saves a few seconds a run and costs one stamp file.
+      """
+      parent = self.parent
+      venv: Path = REPO_ROOT / self.LATEST_VENV
+      python: Path = venv / 'bin' / 'python'
+      stamp: Path = venv / '.devtool-stamp'
+      wanted: str = (
+        f'{version} {hashlib.sha256((REPO_ROOT / "pyproject.toml").read_bytes()).hexdigest()}'
+      )
+
+      running: bool | CompletedProcess | None = None
+      if python.exists():
+        running = parent._run_command(
+          [str(python), '-c', 'import platform; print(platform.python_version())'],
+          capture_output=True,
+        )
+      ready: bool = isinstance(running, CompletedProcess) and running.stdout.strip() == version
+      if not ready:
+        parent._print(f'Building {self.LATEST_VENV} on pyenv Python {version}...', 'info')
+        ready = self._passed(
+          parent._run_command(
+            ['pyenv', 'exec', 'python', '-m', 'venv', '--clear', str(venv)],
+            cwd=str(REPO_ROOT),
+            env={**os.environ, 'PYENV_VERSION': version},
+          )
+        )
+
+      current: bool = ready and stamp.exists() and stamp.read_text(encoding='utf-8') == wanted
+      if ready and not current:
+        plugins: list[str] = [
+          name
+          for name in FreyjaDevTools.dig(['tool', 'poetry', 'group', 'dev', 'dependencies'])
+          if name.startswith('pytest')
+        ]
+        parent._print(
+          f'Installing the project and {", ".join(plugins)} into {self.LATEST_VENV}...', 'info'
+        )
+        ready = self._passed(
+          parent._run_command(
+            [
+              str(python),
+              '-m',
+              'pip',
+              'install',
+              '--quiet',
+              '--disable-pip-version-check',
+              '-e',
+              '.',
+              *plugins,
+            ],
+            cwd=str(REPO_ROOT),
+          )
+        )
+        if ready and not parent.dry_run:
+          stamp.write_text(wanted, encoding='utf-8')
+
+      return python if ready else None
+
+    def _run_latest(self) -> tuple[str, bool]:
+      """Run the suite on the newest pyenv 3.14 in its own venv; return its label and verdict."""
+      parent = self.parent
+      version: str | None = self._latest_version()
+      python: Path | None = self._latest_venv(version) if version is not None else None
+      if python is None:
+        parent._print(f'Could not prepare Python {self.LATEST_MINOR} through pyenv', 'error')
+      passed: bool = python is not None and self._passed(
+        parent._run_command(
+          [str(python), '-m', 'pytest', *self._pytest_options()],
+          cwd=str(REPO_ROOT),
+          env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'},  # keep 3.14 bytecode out of the tree
+        )
+      )
+      return f'Python {version or self.LATEST_MINOR} ({self.LATEST_VENV})', passed
+
+    def lint(self, fix: bool = False, skip_mypy: bool = False, clean: bool = False) -> int:
+      """Run Ruff's linter and formatter, then MyPy; every step runs even after one fails.
+
+      :param fix: Apply Ruff's auto-fixes and reformat, instead of only reporting
+      :param skip_mypy: Skip MyPy type checking if True
+      :param clean: Clear Ruff's cache first
+      """
+      parent = self.parent
+      parent._print('🔍 Running code quality checks...', 'info')
+
+      success: bool = not clean or self._passed(
+        parent._run_command('poetry run ruff clean', '🧹 Clearing the Ruff cache...')
+      )
+
+      # Big bright message before linting
+      print(f'\n{parent.colors["yellow"]}{"=" * 60}{parent.colors["nc"]}')
+      print(f'{parent.colors["yellow"]}{"=" * 20} 🔍 LINTING... {"=" * 20}{parent.colors["nc"]}')
+      print(f'{parent.colors["yellow"]}{"=" * 60}{parent.colors["nc"]}\n')
+
+      # Lint before formatting: --fix can leave code the formatter would change, never the reverse.
+      ruff_cmd = 'poetry run ruff check .'
+      if fix:
+        ruff_cmd += ' --fix'
+      if not self._passed(parent._run_command(ruff_cmd, '📝 Running Ruff linting...')):
+        success = False
+
+      ruff_format_cmd = 'poetry run ruff format .'
+      if not fix:
+        ruff_format_cmd += ' --check'
+      if not self._passed(parent._run_command(ruff_format_cmd, '🎨 Running Ruff formatting...')):
+        success = False
+
+      # Run MyPy with strict type checking (unless skipped)
+      if not skip_mypy:
+        # Big bright message before MyPy
+        print(f'\n{parent.colors["blue"]}{"=" * 60}{parent.colors["nc"]}')
+        print(f'{parent.colors["blue"]}{"=" * 18} 🔧 RUNNING MYPY {"=" * 18}{parent.colors["nc"]}')
+        print(f'{parent.colors["blue"]}{"=" * 60}{parent.colors["nc"]}\n')
+
+        # The files to check come from [tool.mypy] in pyproject.toml: idunn, tests and examples.
+        mypy_cmd = 'poetry run mypy'
+        # Generate reports if directories exist
+        reports_dir = Path(parent.project_src) / 'reports' / 'mypy'
+        if reports_dir.exists():
+          mypy_cmd += f' --html-report {reports_dir} --linecount-report {reports_dir} --linecoverage-report {reports_dir}'
+        if not self._passed(parent._run_command(mypy_cmd, '🔧 Running MyPy type checking...')):
+          success = False
+      else:
+        parent._print('⏭️  Skipping MyPy type checking (--skip-mypy)', 'info')
+
+      if success:
+        parent._print('All code quality checks passed!', 'success')
+      else:
+        parent._print('Some code quality checks failed!', 'error')
+      return 0 if success else 1
 
     def unit(
       self,
-    ) -> None:
+    ) -> int:
       """Run unit tests with configured options."""
       parent = self.parent
       parent._print('🧪 Running unit tests with coverage...', 'info')
 
-      cmd_parts = self._build_test_cmd('unit')
-      success = parent._run_command(cmd_parts)
+      # Anything not marked integration is a unit test; nobody wants to badge every file.
+      cmd_parts = self._build_test_cmd('not integration')
+      success: bool = self._passed(parent._run_command(cmd_parts))
 
       if success:
-        parent._print('📊 Coverage report generated in htmlcov/', 'info')
+        if self.coverage:
+          parent._print('📊 Coverage report generated in htmlcov/', 'info')
         parent._print('Unit tests completed successfully!', 'success')
       else:
         parent._print('Unit tests failed!', 'error')
+      return 0 if success else 1
 
-    def integration(self) -> None:
+    def integration(self) -> int:
       """Run integration tests with configured options."""
       parent = self.parent
       parent._print('🔗 Running integration tests...', 'info')
 
       cmd_parts = self._build_test_cmd('integration')
-      success = parent._run_command(cmd_parts)
+      success: bool = self._passed(parent._run_command(cmd_parts))
 
       if success:
-        parent._print('📊 Coverage report generated in htmlcov/', 'info')
+        if self.coverage:
+          parent._print('📊 Coverage report generated in htmlcov/', 'info')
         parent._print('Integration tests completed successfully!', 'success')
       else:
         parent._print('Integration tests failed!', 'error')
+      return 0 if success else 1
 
-    def all(self) -> None:
-      """Run all tests (unit and integration) with configured options."""
+    def all(self) -> int:
+      """Lint, run all tests on the project interpreter, then again on the newest pyenv Python 3.14."""
       parent = self.parent
-      parent._print('🧪 Running all tests (unit and integration)...', 'info')
+      lint_passed: bool = self.lint() == 0
 
-      cmd_parts = self._build_test_cmd('unit or integration')
-      success = parent._run_command(cmd_parts)
-
-      if success:
+      parent._print(
+        '🧪 Running all tests (unit and integration) on the project interpreter...', 'info'
+      )
+      project_label: str = self._project_python()
+      project_passed: bool = self._passed(parent._run_command(self._build_test_cmd()))
+      if project_passed and self.coverage:
         parent._print('📊 Coverage report generated in htmlcov/', 'info')
-        parent._print('All tests completed successfully!', 'success')
+
+      parent._print(f'🧪 Running all tests again on Python {self.LATEST_MINOR} (pyenv)...', 'info')
+      latest_label, latest_passed = self._run_latest()
+
+      self._report('Lint', lint_passed)
+      self._report(project_label, project_passed)
+      self._report(latest_label, latest_passed)
+      success: bool = lint_passed and project_passed and latest_passed
+      if success:
+        parent._print('Lint clean and all tests passed on both interpreters!', 'success')
       else:
-        parent._print('Some tests failed!', 'error')
+        parent._print('Some checks failed!', 'error')
+      return 0 if success else 1
 
 
 if __name__ == '__main__':

@@ -9,9 +9,10 @@ from textwrap import dedent
 from types import ModuleType
 
 import pytest
-from idunn import AdapterNotFoundError, DiscoveryError, Idunn
 
-from _support import PackageWriter
+from idunn import AdapterNotFoundError, DiscoveryError, Idunn, InvalidAdapterError
+
+from _support import PackageWriter, Resolve
 
 
 class Sources:
@@ -67,12 +68,7 @@ class Sources:
   def take_apple(module_name: str) -> str:
     """Resolve ``AppleBasketPort`` from ``module_name`` through the singleton."""
     ports = importlib.import_module(module_name)
-    return str(Idunn()._inject(ports.AppleBasketPort).take_apple())
-
-
-@pytest.fixture
-def writer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> PackageWriter:
-  return PackageWriter(tmp_path=tmp_path, monkeypatch=monkeypatch)
+    return str(Resolve.port(ports.AppleBasketPort).take_apple())
 
 
 def test_autodiscover_registers_decorated_classes_in_any_module(writer: PackageWriter) -> None:
@@ -112,7 +108,7 @@ def test_autodiscover_registers_ports_before_adapters_across_modules(
 
   report = Idunn().autodiscover(pkg)
 
-  # register_adapter records the port implicitly; the port must still show up in the report.
+  # An adapter brings its port in implicitly; the port must still show up in the report.
   assert report['registered_ports'] == (f'{pkg}.z_contracts.AppleBasketPort',)
   assert report['registered_adapters'] == (f'{pkg}.a_impl.GoldenBasket',)
 
@@ -375,7 +371,41 @@ def test_autodiscover_strict_raises_before_registering_anything(writer: PackageW
     Idunn().autodiscover(pkg)
 
   # Everything imports before anything registers, so a failure leaves the catalog untouched.
-  assert Idunn()._mapper.ports == frozenset()
+  assert Idunn()._snapshot().catalog.ports == frozenset()
+
+
+def test_autodiscover_collision_registers_nothing_from_the_run(writer: PackageWriter) -> None:
+  pkg = 'disc_collision'
+  writer.package(
+    pkg,
+    {
+      'ports.py': Sources.PORT,
+      'a_golden.py': Sources.adapter(pkg),
+      'b_rival.py': Sources.adapter(pkg, name='RivalBasket', apple='rival'),
+    },
+  )
+
+  with pytest.raises(InvalidAdapterError, match=f'{pkg}.a_golden.GoldenBasket and .*RivalBasket'):
+    Idunn().autodiscover(pkg)
+
+  # One batch, validated whole: the port and the first module's adapter never registered either.
+  assert Idunn()._snapshot().catalog.ports == frozenset()
+  assert Idunn().describe() == 'Environment: local'
+
+
+@pytest.mark.parametrize('strict', [True, False])
+def test_autodiscover_refuses_a_zipped_root_whatever_strict_says(
+  writer: PackageWriter, strict: bool
+) -> None:
+  pkg = f'disc_zipped_{str(strict).lower()}'
+  archive = writer.zipped_package(pkg, {'__init__.py': Sources.PORT, 'adapters.py': Sources.both()})
+
+  with pytest.raises(DiscoveryError, match=f'{pkg}.*{archive.name}'):
+    Idunn().autodiscover(pkg, strict=strict)
+
+  # Refused before scanning: nothing below the root is imported, and not even its port registers.
+  assert f'{pkg}.adapters' not in sys.modules
+  assert Idunn()._snapshot().catalog.ports == frozenset()
 
 
 def test_autodiscover_non_strict_skips_and_reports_unimportable(writer: PackageWriter) -> None:
@@ -390,6 +420,29 @@ def test_autodiscover_non_strict_skips_and_reports_unimportable(writer: PackageW
   assert report['skipped_modules'] == (f'{pkg}.broken',)
   assert report['registered_adapters'] == (f'{pkg}.adapters.GoldenBasket',)
   assert Sources.take_apple(f'{pkg}.ports') == 'golden'
+
+
+def test_autodiscover_non_strict_still_lets_system_exit_through(writer: PackageWriter) -> None:
+  # strict=False forgives an import that fails, not a module that asks the process to stop.
+  pkg = 'disc_exits'
+  writer.package(pkg, {'ports.py': Sources.PORT, 'cli.py': 'raise SystemExit(3)'})
+
+  with pytest.raises(SystemExit):
+    Idunn().autodiscover(pkg, strict=False)
+
+
+@pytest.mark.parametrize('strict', [True, False])
+def test_the_roots_own_import_errors_propagate_unwrapped(
+  writer: PackageWriter, strict: bool
+) -> None:
+  # Nothing below a root that will not import was ever scanned, so there is no module to skip.
+  broken = f'disc_broken_root_{strict}'
+  writer.package(broken, {'__init__.py': 'raise RuntimeError("the root itself")'})
+
+  with pytest.raises(ModuleNotFoundError, match=f'disc_no_such_root_{strict}'):
+    Idunn().autodiscover(f'disc_no_such_root_{strict}', strict=strict)
+  with pytest.raises(RuntimeError, match='the root itself'):
+    Idunn().autodiscover(broken, strict=strict)
 
 
 def test_autodiscover_constructs_nothing(writer: PackageWriter) -> None:
@@ -455,7 +508,7 @@ def test_autodiscover_constructs_nothing(writer: PackageWriter) -> None:
     f'{pkg}.z_apple.GoldenBasket',
   )
 
-  feast = Idunn()._inject(ports.FeastPort)
+  feast = Resolve.port(ports.FeastPort)
 
   assert feast.serve() == 'feast with golden'
   assert feast_module.constructed == 1
@@ -521,14 +574,12 @@ def test_autodiscover_scans_the_running_main_instead_of_importing_it(
   assert report['registered_adapters'] == ('__main__.GoldenBasket',)
 
 
-def test_autodiscover_reuses_the_module_running_as_main(tmp_path: Path) -> None:
+def test_autodiscover_reuses_the_module_running_as_main(writer: PackageWriter) -> None:
   pkg = 'disc_run'
-  package_dir = tmp_path / pkg
-  package_dir.mkdir()
-  (package_dir / '__init__.py').write_text('', encoding='utf-8')
-  (package_dir / 'main.py').write_text(
-    dedent(
-      f"""
+  package_dir: Path = writer.package(
+    pkg,
+    {
+      'main.py': f"""
       from typing import Protocol
       from idunn import Adapter, Idunn, Invert, Port
 
@@ -545,34 +596,26 @@ def test_autodiscover_reuses_the_module_running_as_main(tmp_path: Path) -> None:
         basket: AppleBasketPort
 
         @Invert()
-        def __init__(self, basket: AppleBasketPort) -> None:
+        def __init__(self, *, basket: AppleBasketPort) -> None:
           pass
 
       if __name__ == "__main__":
         Idunn().autodiscover("{pkg}")
         print(Feast().basket.take_apple())
       """
-    ).strip()
-    + '\n',
-    encoding='utf-8',
+    },
   )
 
   # Importing main.py a second time would register a different AppleBasketPort than the one
   # the running Feast asks for, and the print would fail with AdapterNotFoundError.
   result = subprocess.run(
     [sys.executable, '-m', f'{pkg}.main'],
-    cwd=tmp_path,
+    cwd=package_dir.parent,
     capture_output=True,
     text=True,
+    timeout=30,
     check=False,
   )
 
   assert result.returncode == 0, result.stderr
   assert result.stdout.strip() == 'golden'
-
-
-def test_examples_my_app_follows_the_recommended_layout() -> None:
-  report = Idunn().autodiscover('examples.my_app')
-
-  assert report['registered_ports'] == ('examples.my_app.ports.AppleBasketPort',)
-  assert report['registered_adapters'] == ('examples.my_app.adapters.GoldenAppleBasketAdapter',)

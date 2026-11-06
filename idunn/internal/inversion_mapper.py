@@ -1,17 +1,19 @@
-"""The port-to-adapter catalog: registration, environment-filtered selection, and caching."""
+"""The port-to-adapter catalog: atomic batch registration and lock-free, env-filtered selection."""
 
 from __future__ import annotations
 
-from typing import Any, NoReturn
+from collections.abc import Iterable
+from threading import Lock
+from typing import Any
 
 from idunn.domain import (
   AdapterDeclaration,
   AdapterMetadata,
-  AdapterNotFoundError,
+  Catalog,
   InvalidAdapterError,
   InvalidPortError,
   PortBinding,
-  RegistrationKey,
+  SlotKey,
 )
 from idunn.util import QualifiedName
 
@@ -20,39 +22,44 @@ from .port_registry import PortRegistry
 
 
 class InversionMapper:
-  """Owns the port/adapter registry and answers "which adapter for this port?".
-
-  Selection is environment-filtered and memoized in a per-``(environment, key)`` cache
-  that is invalidated whenever the registry mutates, so a hot resolve is a dict lookup
-  rather than a filter-and-sort.
+  """Owns the :class:`~idunn.domain.Catalog` and answers "which adapter for this port?".
+  The catalog is copy-on-write. Readers take whichever snapshot is current and never lock. Writers
+  queue on one lock, copy the catalog once, validate everything they add, and swap the result in
+  with a single assignment, so a batch lands whole or not at all and nobody reads half of one.
   """
 
   def __init__(self) -> None:
-    """Start with an empty registry and a cold selection cache."""
-    self._ports: set[type[Any]] = set()
-    self._adapters: list[AdapterMetadata] = []
-    self._registered_adapter_classes: set[type[Any]] = set()
-    self._order: int = 0
-    self._selection_cache: dict[tuple[str, RegistrationKey], AdapterMetadata | None] = {}
-    self._dirty: bool = False
+    """Start with an empty catalog and an idle write lock."""
+    self._catalog: Catalog = Catalog.empty()
+    self._write_lock: Lock = Lock()
 
   def bindings(self, *, environment: str) -> tuple[PortBinding, ...]:
-    """Structured snapshot of every port and its adapters for the given environment."""
-    snapshot: list[PortBinding] = []
-    for port in sorted(self._ports, key=QualifiedName.of):
-      adapters = tuple(metadata for metadata in self._adapters if metadata.port is port)
-      selected = self.find(port=port, key=None, environment=environment)
-      snapshot.append(PortBinding(port=port, selected=selected, adapters=adapters))
-    return tuple(snapshot)
+    """Return every port and its adapters in ``environment``, sorted by name.
+    Reads one snapshot, so the adapter lists and the ``selected`` lines always agree, even while
+    another thread registers.
+    """
+    catalog: Catalog = self._catalog
+    grouped: dict[type[Any], list[AdapterMetadata]] = {port: [] for port in catalog.ports}
+    for metadata in catalog.adapters.values():
+      grouped[metadata.port].append(metadata)
+    return tuple(
+      PortBinding(
+        port=port,
+        selected=catalog.find(port=port, key=None, environment=environment),
+        adapters=tuple(grouped[port]),
+      )
+      for port in sorted(catalog.ports, key=QualifiedName.of)
+    )
+
+  @property
+  def catalog(self) -> Catalog:
+    """The current snapshot. Keep it as long as you like: nothing will ever change it."""
+    return self._catalog
 
   def clear(self) -> None:
-    """Drop every port, adapter, and cached selection."""
-    self._ports.clear()
-    self._adapters.clear()
-    self._registered_adapter_classes.clear()
-    self._order = 0
-    self._selection_cache.clear()
-    self._dirty = False
+    """Forget every port and adapter by swapping in an empty catalog."""
+    with self._write_lock:
+      self._catalog = Catalog.empty()
 
   def find(
     self,
@@ -61,93 +68,91 @@ class InversionMapper:
     key: str | None,
     environment: str,
   ) -> AdapterMetadata | None:
-    """Return the active adapter for a port+key in an environment, or ``None``.
-
-    Hot path: after the first lookup per ``(environment, key)`` this is a dict hit;
-    the cache is dropped wholesale whenever the registry mutates (see ``_refresh_cache``).
+    """Return the active adapter for ``port`` and ``key`` in ``environment``, or ``None``.
+    Hot path: one dict hit on the current snapshot and a filter over a slot of one or two.
     """
-    self._refresh_cache()
-    cache_key = (environment, RegistrationKey(port=port, key=key))
-    if cache_key not in self._selection_cache:
-      candidates = self._active_candidates(port=port, key=key, environment=environment)
-      self._selection_cache[cache_key] = candidates[0] if candidates else None
-    return self._selection_cache[cache_key]
+    return self._catalog.find(port=port, key=key, environment=environment)
 
-  @property
-  def ports(self) -> frozenset[type[Any]]:
-    """Registered ports."""
-    return frozenset(self._ports)
-
-  def register_adapter(self, adapter: type[Any]) -> bool:
-    """Register a ``@Adapter``-marked class; returns whether it was newly added."""
-    declaration = self._declaration_for(adapter=adapter)
-    if adapter in self._registered_adapter_classes:
-      return False  # already registered — idempotent no-op
-    InversionValidator.validate_adapter_class(adapter=adapter, port=declaration.port)
-    metadata = AdapterMetadata(
-      adapter=adapter,
-      port=declaration.port,
-      key=declaration.key,
-      lifecycle=declaration.lifecycle,
-      envs=declaration.envs,
-      order=self._order,
-    )
-    InversionValidator.validate_registration(metadata=metadata, existing=tuple(self._adapters))
-    self._ports.add(metadata.port)
-    self._adapters.append(metadata)
-    self._registered_adapter_classes.add(adapter)
-    self._order += 1
-    self._dirty = True
-    return True
-
-  def register_port(self, port: type[Any]) -> bool:
-    """Register a ``@Port`` Protocol; returns whether it was newly added."""
-    if not PortRegistry.is_port(port):
-      message = f'Port is not marked with @Port: {port.__qualname__}'
-      raise InvalidPortError(message)
-    is_new = port not in self._ports  # capture before add mutates membership
-    self._ports.add(port)
-    return is_new
-
-  def select(self, *, port: type[Any], key: str | None, environment: str) -> AdapterMetadata:
-    """Like :meth:`find`, but raise :class:`AdapterNotFoundError` when nothing matches."""
-    found = self.find(port=port, key=key, environment=environment)
-    if found is None:
-      self._raise_adapter_not_found(port=port, key=key, environment=environment)
-    return found
-
-  def _active_candidates(
+  def register_batch(
     self,
     *,
-    port: type[Any],
-    key: str | None,
-    environment: str,
-  ) -> list[AdapterMetadata]:
-    return sorted(
-      (
-        metadata
-        for metadata in self._adapters
-        if metadata.port is port and metadata.is_available_in(environment) and metadata.key == key
-      ),
-      key=lambda item: item.order,
-    )
+    ports: Iterable[type[Any]] = (),
+    adapters: Iterable[type[Any]] = (),
+  ) -> tuple[tuple[type[Any], ...], tuple[type[Any], ...]]:
+    """Register ``ports``, then ``adapters``, all or nothing; return the ``(ports, adapters)`` new.
+    Runs under the write lock against the latest catalog: copy once, fold, validate each new
+    adapter against its slot (earlier registrations and this batch alike), then swap. An error
+    propagates before the swap, leaving the catalog exactly as it was. A class already registered,
+    or repeated in the batch, is skipped rather than refused, so two discoveries of one root can
+    race harmlessly: whoever comes second simply finds nothing new.
+    """
+    with self._write_lock:
+      current: Catalog = self._catalog
+      known_ports: set[type[Any]] = set(current.ports)
+      known_adapters: dict[type[Any], AdapterMetadata] = dict(current.adapters)
+      slots: dict[SlotKey, tuple[AdapterMetadata, ...]] = dict(current.slots)
+      new_ports: tuple[type[Any], ...] = self._fold_ports(ports=ports, known=known_ports)
+      new_adapters: tuple[type[Any], ...] = self._fold_adapters(
+        adapters=adapters, ports=known_ports, known=known_adapters, slots=slots
+      )
+      if new_ports or new_adapters:
+        self._catalog = Catalog.freeze(ports=known_ports, adapters=known_adapters, slots=slots)
+    return new_ports, new_adapters
+
+  def restore(self, catalog: Catalog) -> None:
+    """Swap back a catalog read earlier from :attr:`catalog`, undoing every batch since.
+    No copy needed: a catalog never changes, so the old one is exactly as it was handed out.
+    """
+    with self._write_lock:
+      self._catalog = catalog
 
   def _declaration_for(self, *, adapter: type[Any]) -> AdapterDeclaration:
-    declaration = getattr(adapter, '__idunn_adapter_declaration__', None)
-    if declaration is None or not isinstance(declaration, AdapterDeclaration):
-      message = f'Adapter class is not marked with @Adapter: {adapter.__qualname__}'
+    # Own __dict__ only, as discovery reads it: an undecorated subclass is no adapter here either.
+    declaration: AdapterDeclaration | None = AdapterDeclaration.of(adapter)
+    if declaration is None:
+      message: str = f'Adapter class is not marked with @Adapter: {QualifiedName.of(adapter)}'
       raise InvalidAdapterError(message)
     return declaration
 
-  def _raise_adapter_not_found(
-    self, *, port: type[Any], key: str | None, environment: str
-  ) -> NoReturn:
-    location = f'in {environment!r}'
-    detail = f' with key {key!r}' if key is not None else ''
-    message = f'No active adapter registered for port {port.__qualname__}{detail} {location}.'
-    raise AdapterNotFoundError(message)
+  def _fold_adapters(
+    self,
+    *,
+    adapters: Iterable[type[Any]],
+    ports: set[type[Any]],
+    known: dict[type[Any], AdapterMetadata],
+    slots: dict[SlotKey, tuple[AdapterMetadata, ...]],
+  ) -> tuple[type[Any], ...]:
+    # Mutates the batch's private working copies only; the live catalog is never touched here.
+    new: list[type[Any]] = []
+    for adapter in adapters:
+      declaration: AdapterDeclaration = self._declaration_for(adapter=adapter)
+      if adapter not in known:
+        InversionValidator.validate_adapter_class(adapter=adapter, port=declaration.port)
+        metadata: AdapterMetadata = AdapterMetadata(
+          adapter=adapter,
+          port=declaration.port,
+          key=declaration.key,
+          lifecycle=declaration.lifecycle,
+          envs=declaration.envs,
+        )
+        slot: SlotKey = (metadata.port, metadata.key)
+        InversionValidator.validate_registration(metadata=metadata, slot=slots.get(slot, ()))
+        slots[slot] = (*slots.get(slot, ()), metadata)
+        known[adapter] = metadata
+        # Implicit, so not reported as new: the port is credited to whoever defines it.
+        ports.add(metadata.port)
+        new.append(adapter)
+    return tuple(new)
 
-  def _refresh_cache(self) -> None:
-    if self._dirty:
-      self._selection_cache.clear()
-      self._dirty = False
+  def _fold_ports(
+    self, *, ports: Iterable[type[Any]], known: set[type[Any]]
+  ) -> tuple[type[Any], ...]:
+    new: list[type[Any]] = []
+    for port in ports:
+      if not PortRegistry.is_port(port):
+        message: str = f'Port is not marked with @Port: {QualifiedName.of(port)}'
+        raise InvalidPortError(message)
+      if port not in known:
+        known.add(port)
+        new.append(port)
+    return tuple(new)

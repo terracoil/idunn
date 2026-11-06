@@ -1,5 +1,4 @@
 """End-to-end: a user's package wired only through the public ``idunn`` surface.
-
 ``orchard_shop`` is written to disk once per module and discovered the way an application
 would do it. Nothing here touches ``Idunn()`` internals or the engine seams: wiring happens
 through ``autodiscover`` / ``bootstrap``, and every object graph starts at an ``@Invert()``
@@ -11,9 +10,13 @@ from collections.abc import Iterator
 from types import ModuleType
 
 import pytest
+
 from idunn import AdapterNotFoundError, Idunn, ReportMap
 
 from _support import PackageWriter
+
+# Lets `bin/devtool test unit` leave these out and `test integration` pick only these.
+pytestmark = pytest.mark.integration
 
 
 class Shop:
@@ -117,7 +120,12 @@ class Shop:
 
         @Invert()
         def __init__(
-          self, customer: str, pricing: PricingPort, stock: StockPort, audit: AuditPort | None = None
+          self,
+          customer: str,
+          *,
+          pricing: PricingPort,
+          stock: StockPort,
+          audit: AuditPort | None = None,
         ) -> None:
           self.customer = customer
 
@@ -131,12 +139,12 @@ class Shop:
         stock: StockPort
 
         @Invert(keys={'stock': 'demo'})
-        def __init__(self, stock: StockPort) -> None:
+        def __init__(self, *, stock: StockPort) -> None:
           pass
 
       class Kiosk:
         @Invert({'greeter': LoudGreeterPort})
-        def __init__(self, greeter) -> None:
+        def __init__(self, *, greeter) -> None:
           pass
     """,
     # A library-style entry point that bootstraps its own root on first use.

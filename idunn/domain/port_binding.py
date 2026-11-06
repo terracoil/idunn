@@ -1,4 +1,4 @@
-"""Structured snapshot of one port's adapter bindings."""
+"""A snapshot of one port and its adapters, for introspection."""
 
 from __future__ import annotations
 
@@ -10,12 +10,11 @@ from .adapter_metadata import AdapterMetadata
 
 @dataclass(frozen=True, slots=True)
 class PortBinding:
-  """One port, every adapter registered for it, and the one active in an environment.
-
-  Built by :class:`~idunn.internal.InversionMapper` as the single source of truth
-  for introspection (it backs ``Idunn().describe()``). ``selected`` is the adapter an
-  unkeyed resolve would return in the snapshot environment, or ``None`` when every
-  adapter for the port is keyed.
+  """One port, every adapter registered for it, and the one an unkeyed resolve would pick.
+  Built by :class:`~idunn.internal.InversionMapper` from the same selection the resolver uses, so
+  the ``selected`` line of ``Idunn().describe()`` is exactly what an unkeyed ``@Invert()``
+  parameter receives. ``selected`` is ``None`` when no unkeyed adapter is active in the snapshot
+  environment, which includes the port having no adapters at all.
   """
 
   port: type[Any]

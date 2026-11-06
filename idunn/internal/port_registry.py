@@ -6,7 +6,6 @@ from weakref import WeakSet
 
 class PortRegistry:
   """Records ``@Port`` Protocols by identity instead of flagging them with an attribute.
-
   Python 3.11 counts every attribute in a Protocol's own namespace as a protocol member, so a
   marker written onto the Protocol would make structural adapters fail ``isinstance``. Lookup is
   by exact class: an undecorated subclass of a port (an adapter or another Protocol) is not a
