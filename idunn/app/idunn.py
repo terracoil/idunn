@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from functools import partial
 from typing import Any
 
@@ -37,6 +37,7 @@ class Idunn(metaclass=MetaSingleton):
     self._environment: str = Environment.current().name
     self._mapper: InversionMapper = InversionMapper()
     self._resolver: InversionResolver = InversionResolver(self._mapper)
+    self._discovery: AutoDiscovery = AutoDiscovery(self._mapper)
     self._gate: BootstrapGate = BootstrapGate()
 
   def autodiscover(
@@ -52,8 +53,7 @@ class Idunn(metaclass=MetaSingleton):
     report lists only what this call newly registered, so running it twice is harmless and the
     second report is short.
     """
-    return AutoDiscovery().autodiscover(
-      mapper=self._mapper,
+    return self._discovery.autodiscover(
       root_package=root_package,
       exclude=exclude,
       strict=strict,
@@ -78,10 +78,15 @@ class Idunn(metaclass=MetaSingleton):
     run's report; the cached report merges every run of the root's first bootstrap, so nothing
     those runs registered goes missing from it.
     """
-    discover: Callable[[], ReportMap] = partial(
-      self.autodiscover, root_package, exclude=exclude, strict=strict
+    cached: ReportMap | None = self._gate.cached(root_package)  # warm: no partial, no gate trip
+    return (
+      cached
+      if cached is not None
+      else self._gate.run(
+        root_package,
+        discover=partial(self.autodiscover, root_package, exclude=exclude, strict=strict),
+      )
     )
-    return self._gate.run(root_package, discover=discover)
 
   def describe(self) -> str:
     """Return a readable snapshot of the port-to-adapter bindings in the current environment.

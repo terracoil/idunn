@@ -165,7 +165,8 @@ parameters. The list below covers everything else that might bite.
   autotag` carried on past a failed step. Devtool itself works from any directory, reading
   `pyproject.toml` and cleaning at the repository root it finds beside itself, and `build clean`
   empties `tmp/` but spares the test venvs (`tmp/venv-*`) and `tmp/.gitkeep`, so a clean no longer
-  costs a pyenv rebuild.
+  costs a pyenv rebuild. It removes a symlink as a link and leaves whatever lies behind one alone,
+  so a clean stays inside the repository.
 - `poetry.lock` is committed. CI is split into a `quality` job, run once on
   3.13.16 (lock check, format, lint, strict mypy), and a `test` job on 3.11, 3.12, 3.13.16 and 3.14.
 - The mypy cache joins Pytest's and Ruff's under the git-ignored `tmp/`. The unused `pillow` and

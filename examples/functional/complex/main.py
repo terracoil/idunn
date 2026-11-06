@@ -19,6 +19,6 @@ if __name__ == '__main__':
   print(sell('Freyja', 2))  # a new till for each call, but the same storeroom
   print(take_stock())
   print(pour('Thor'))
-  print(pour('Loki'))  # this call's bootstrap is a cache hit
+  print(pour('Loki'))  # pour_for finds the library already wired
   print()
   print(Idunn().describe())

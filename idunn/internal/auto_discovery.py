@@ -34,10 +34,15 @@ class AutoDiscovery:
   # Importing ``pkg.__main__`` runs the package's CLI, so it is never a discovery target.
   NEVER_IMPORTED: Final[frozenset[str]] = frozenset({'__main__'})
 
+  def __init__(self, mapper: InversionMapper) -> None:
+    """Bind discovery to the mapper it registers into: the facade's own, for its whole life.
+    ``reset()`` empties that mapper in place, so one ``AutoDiscovery`` outlives every reset.
+    """
+    self._mapper: InversionMapper = mapper
+
   def autodiscover(
     self,
     *,
-    mapper: InversionMapper,
     root_package: str,
     exclude: Iterable[str] | str = (),
     strict: bool = True,
@@ -58,7 +63,7 @@ class AutoDiscovery:
     )
     # The batch folds ports before adapters across the whole set: an adapter registers its port
     # implicitly, which would hide that port from the report if it came first.
-    new_ports, new_adapters = mapper.register_batch(
+    new_ports, new_adapters = self._mapper.register_batch(
       ports=filter(PortRegistry.is_port, candidates),
       adapters=filter(self._is_adapter, candidates),
     )

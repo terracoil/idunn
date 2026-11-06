@@ -31,7 +31,8 @@ class DecoratorSupport:
     """Return ``key`` as a plain ``str``, so a ``StrEnum`` member is kept and printed as its value.
     ``str.__str__`` rather than ``str()``: a ``(str, Enum)`` member's ``__str__`` answers
     ``'Grade.GOLD'``, which would quietly stop it matching the ``'gold'`` it equals. Every key, from
-    ``@Adapter``, ``@Invert`` or ``Harness.override``, goes through here after its type check.
+    ``@Adapter``, ``@Invert`` or ``Harness.override``, goes through here after its type check, and
+    so does ``@Invert(bootstrap=...)``'s root, which discovery would otherwise spell the same way.
     """
     return str.__str__(key)
 

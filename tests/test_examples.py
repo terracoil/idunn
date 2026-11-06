@@ -1,14 +1,17 @@
 """Every example runs, prints exactly its ``expected*.txt``, and registers what its docstring says.
-Examples are found by globbing ``examples/*/*/main.py``, so a new one is tested the day it lands,
-and one with no expected file fails rather than passing unread. ``expected.txt`` runs with
-``IDUNN_ENV`` unset and ``expected.<env>.txt`` with ``IDUNN_ENV=<env>``, each in a subprocess with
-a scrubbed environment, because a stray ``IDUNN_ENV`` in a developer's shell is precisely the kind
-of thing an example should not depend on. The README's "Normal usage" listings are pinned to
-``examples/classy/simple`` too, so the copy readers paste cannot drift from the copy the suite runs.
+Examples are found by globbing ``examples/*/*/main.py``, so a new one is tested the day it lands.
+Its ``__init__`` docstring makes two promises. ``Environments:`` names the runs: each name is
+``IDUNN_ENV=<name>`` against ``expected.<name>.txt``, except ``unset``, which runs with
+``IDUNN_ENV`` unset against ``expected.txt``, and the files shipped must match the line exactly, so
+a missing or stray one fails rather than passing unread. ``Registers:`` names, relative to the
+package, every class discovery finds, so a class that moves module is caught too. Each run is a
+subprocess with a scrubbed environment, because a stray ``IDUNN_ENV`` in a developer's shell is
+precisely the kind of thing an example should not depend on. The README's "Normal usage" listings
+are pinned to ``examples/classy/simple`` too, so the copy readers paste cannot drift from the copy
+the suite runs.
 """
 
 import ast
-import importlib
 import os
 import re
 import subprocess
@@ -29,6 +32,9 @@ REPO_ROOT: Path = Path(__file__).resolve().parent.parent
 class Examples:
   """Finds the example packages and reads what each one promises."""
 
+  # The run with no IDUNN_ENV at all, which Idunn treats as `local` but the example need not name.
+  UNSET: str = 'unset'
+
   @staticmethod
   def packages() -> tuple[str, ...]:
     """Name every example package: every directory, two below ``examples``, with a ``main.py``."""
@@ -41,16 +47,18 @@ class Examples:
 
   @staticmethod
   def runs() -> tuple[tuple[str, str | None, Path], ...]:
-    """Pair every example with each of its expected files, as ``(package, env, expected)``.
-    A package with none still gets a run against a missing ``expected.txt``, which fails loudly.
+    """Pair every example with each environment it declares, as ``(package, env, expected)``.
+    The expected file need not exist: a run against a missing one fails loudly, and so does
+    :func:`test_example_ships_exactly_the_expected_files_its_environments_line_names`.
     """
     return tuple(
-      (package, Examples.environment(expected), expected)
-      for package in Examples.packages()
-      for expected in (
-        sorted(Examples.directory(package).glob('expected*.txt'))
-        or [Examples.directory(package) / 'expected.txt']
+      (
+        package,
+        None if environment == Examples.UNSET else environment,
+        Examples.directory(package) / Examples.expected_name(environment),
       )
+      for package in Examples.packages()
+      for environment in Examples.environments(package)
     )
 
   @staticmethod
@@ -59,10 +67,58 @@ class Examples:
     return REPO_ROOT.joinpath(*package.split('.'))
 
   @staticmethod
-  def environment(expected: Path) -> str | None:
-    """Read the environment from the name: ``prod`` for ``expected.prod.txt``, else ``None``."""
-    parts: list[str] = expected.name.split('.')
-    return '.'.join(parts[1:-1]) or None
+  def docstring(package: str) -> str:
+    """Read the package docstring from source, uncleaned, without importing anything."""
+    source: str = (Examples.directory(package) / '__init__.py').read_text(encoding='utf-8')
+    return ast.get_docstring(ast.parse(source), clean=False) or ''
+
+  @staticmethod
+  def environments(package: str) -> list[str]:
+    """Return the names on the ``Environments:`` line, in order; none if there is no such line."""
+    return Examples.names(
+      (Examples.field(Examples.docstring(package), 'Environments') or '').split(',')
+    )
+
+  @staticmethod
+  def expected_name(environment: str) -> str:
+    """Name the file a run compares against: ``expected.txt`` for ``unset``, else by environment."""
+    return 'expected.txt' if environment == Examples.UNSET else f'expected.{environment}.txt'
+
+  @staticmethod
+  def field(docstring: str, name: str) -> str | None:
+    """Return the text after ``<name>:``, indented continuation lines included, or ``None``."""
+    lines: list[str] = docstring.splitlines()
+    start: int | None = next(
+      (index for index, line in enumerate(lines) if line.startswith(f'{name}:')), None
+    )
+    return (
+      None
+      if start is None
+      else ' '.join(
+        [
+          lines[start].removeprefix(f'{name}:'),
+          *takewhile(lambda line: line.startswith(' '), lines[start + 1 :]),
+        ]
+      )
+    )
+
+  @staticmethod
+  def declared(docstring: str) -> tuple[list[str], list[str]]:
+    """Parse ``Registers: module.Port, ...; module.Adapter, ...`` into two sorted lists."""
+    block: str | None = Examples.field(docstring, 'Registers')
+    assert block is not None, 'the package docstring needs a "Registers: ports; adapters" line'
+    ports, adapters = block.split(';')
+    return sorted(Examples.names(ports.split(','))), sorted(Examples.names(adapters.split(',')))
+
+  @staticmethod
+  def names(items: Iterable[str]) -> list[str]:
+    """Strip each item and drop the blanks, keeping the order."""
+    return [item.strip() for item in items if item.strip()]
+
+  @staticmethod
+  def relative(package: str, qualified: Iterable[str]) -> list[str]:
+    """Sort discovered names relative to ``package``; one from elsewhere keeps its full name."""
+    return sorted(name.removeprefix(f'{package}.') for name in qualified)
 
   @staticmethod
   def scrubbed_env(environment: str | None) -> dict[str, str]:
@@ -74,26 +130,6 @@ class Examples:
       'PYTHONPATH': str(REPO_ROOT),
     }
     return base if environment is None else base | {'IDUNN_ENV': environment}
-
-  @staticmethod
-  def declared(docstring: str) -> tuple[list[str], list[str]]:
-    """Parse ``Registers: Port, Port; Adapter, Adapter``, indented continuation lines included."""
-    lines: list[str] = docstring.splitlines()
-    start: int = next(
-      (index for index, line in enumerate(lines) if line.startswith('Registers:')), len(lines)
-    )
-    assert start < len(lines), 'the package docstring needs a "Registers: ports; adapters" line'
-    block: list[str] = [
-      lines[start].removeprefix('Registers:'),
-      *takewhile(lambda line: line.startswith(' '), lines[start + 1 :]),
-    ]
-    ports, adapters = ' '.join(block).split(';')
-    return Examples.names(ports.split(',')), Examples.names(adapters.split(','))
-
-  @staticmethod
-  def names(items: Iterable[str]) -> list[str]:
-    """Sort bare class names: the last dotted part of each, stripped, with blanks dropped."""
-    return sorted(item.strip().rpartition('.')[2] for item in items if item.strip())
 
 
 class Readme:
@@ -146,7 +182,7 @@ def test_examples_are_found() -> None:
 @pytest.mark.parametrize(
   ('package', 'environment', 'expected'),
   Examples.runs(),
-  ids=[f'{package}-{environment or "default"}' for package, environment, _ in Examples.runs()],
+  ids=[f'{package}-{environment or Examples.UNSET}' for package, environment, _ in Examples.runs()],
 )
 def test_example_prints_its_expected_output(
   package: str, environment: str | None, expected: Path
@@ -165,14 +201,25 @@ def test_example_prints_its_expected_output(
   assert result.stdout == expected.read_text(encoding='utf-8')
 
 
+@pytest.mark.parametrize('package', Examples.packages())
+def test_example_ships_exactly_the_expected_files_its_environments_line_names(package: str) -> None:
+  environments: list[str] = Examples.environments(package)
+  shipped: list[str] = sorted(
+    path.name for path in Examples.directory(package).glob('expected*.txt')
+  )
+
+  assert environments, 'the package docstring needs an "Environments: ..." line'
+  assert shipped == sorted(map(Examples.expected_name, environments))
+
+
 @pytest.mark.usefixtures('forget_examples')
 @pytest.mark.parametrize('package', Examples.packages())
 def test_example_registers_what_its_docstring_lists(package: str) -> None:
   report: ReportMap = Idunn().autodiscover(package)
-  ports, adapters = Examples.declared(importlib.import_module(package).__doc__ or '')
+  ports, adapters = Examples.declared(Examples.docstring(package))
 
-  assert Examples.names(report['registered_ports']) == ports
-  assert Examples.names(report['registered_adapters']) == adapters
+  assert Examples.relative(package, report['registered_ports']) == ports
+  assert Examples.relative(package, report['registered_adapters']) == adapters
 
 
 def test_readme_normal_usage_quotes_the_simple_example_file_for_file() -> None:

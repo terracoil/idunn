@@ -96,7 +96,9 @@ class ConstructorPlanner:
     (``MissingTypeHintError``), and a port must not be positional-only, since the resolver passes
     keywords (``TypeError``). A constructor with no code object (``object.__init__``, a builtin
     base) has nothing to inject. The keyword-only rule binds decorated constructors only: the
-    resolver passes every port by keyword, so an undecorated one has no wrapper to confuse.
+    resolver passes every port by keyword, so an undecorated one has no wrapper to confuse. A hint
+    that does not resolve raises ``MissingTypeHintError`` too, chained from the ``NameError``:
+    unlike a consumer's plan, this one is wanted now, by a build that cannot wait for the name.
     """
     init: Callable[..., Any] = adapter.__init__
     found: FunctionShape | None = FunctionShape.of(init)
@@ -105,7 +107,7 @@ class ConstructorPlanner:
     if found is not None:
       # Whatever the function is called, a class's __init__ gets the instance first.
       shape: FunctionShape = dataclasses.replace(found, constructor=True)
-      hints: dict[str, Any] = get_type_hints(init)
+      hints: dict[str, Any] = cls._adapter_hints(adapter, init)
       plans = cls._ports(
         init,
         shape=shape,
@@ -115,6 +117,23 @@ class ConstructorPlanner:
       )
       cls._check_adapter_rest(adapter, shape=shape, hints=hints, plans=plans)
     return plans
+
+  @staticmethod
+  def _adapter_hints(adapter: type[Any], init: Callable[..., Any]) -> dict[str, Any]:
+    # A port defined inside a function under `from __future__ import annotations` is a string no
+    # module namespace can resolve, so the build gets an Idunn error naming the culprit, not a bare
+    # NameError from typing's eval. Nothing is cached, so it succeeds once the name exists. The
+    # message quotes the error rather than `exc.name`: a hint that calls something may raise a
+    # NameError with no name at all, and "names None" would send its reader looking for a None.
+    try:
+      hints: dict[str, Any] = get_type_hints(init)
+    except NameError as exc:
+      message: str = (
+        f'Cannot plan the constructor of {QualifiedName.of(adapter)}: evaluating its type hints '
+        f'raised "{exc}". Define or import what a hint names at module level, where it can see it.'
+      )
+      raise MissingTypeHintError(message) from exc
+    return hints
 
   @classmethod
   def _check_adapter_rest(

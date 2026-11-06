@@ -34,7 +34,7 @@ cross.
 | Define a dependency? | A `Protocol` marked `@Port`. |
 | Bind an implementation? | A class marked `@Adapter(port, ...)`. |
 | Receive dependencies? | Decorate the consumer's `__init__`, or a function, with `@Invert()`. |
-| Register everything? | `Idunn().autodiscover('my_app')` once at startup, or `Idunn().bootstrap('my_lib')` from a library's entry points. |
+| Register everything? | `Idunn().autodiscover('my_app')` once at startup, or, in a library, `@Invert(bootstrap='my_lib')` on its consumers (or `Idunn().bootstrap('my_lib')` from its entry points). |
 | Does `@Adapter` make the class implement the port? | No. The class must satisfy the Protocol itself. |
 | When is injection done? | When an `@Invert()` constructor or function runs. Never at decoration or discovery. |
 | Several adapters for one port? | `envs=` separates them by environment; `key=` makes one opt-in. |
@@ -64,14 +64,19 @@ served = harvest('Asgard')  # the same, for a function: its ports arrive as keyw
 
 At that moment Idunn:
 
-1. selects the active adapter for each `@Port`-typed parameter the caller did not supply (inside a
+1. with `@Invert(bootstrap='my_lib')`, and at least one port parameter the caller did not supply,
+   runs `Idunn().bootstrap('my_lib')`: a discovery on the first call, a cache hit afterwards. It
+   comes after the positional check and the plan, so a mistake there raises before any discovery,
+   and before anything is injected, so a discovery failure leaves `self` untouched;
+2. selects the active adapter for each `@Port`-typed parameter the caller did not supply (inside a
    `Harness.override` block, the stand-in instead; see [Testing](#testing));
-2. plans that adapter's constructor once (cached until `reset()`), honouring its own `@Invert` keys
-   and map, and recursively resolves its `@Port` parameters;
-3. instantiates dependencies first, then the adapter, and checks the instance satisfies the port;
-4. builds each `SINGLETON` once and caches it, and rebuilds `TRANSIENT` ones each time
+3. plans that adapter's constructor once (cached until `reset()`), honouring its own `@Invert` keys
+   and map, and recursively resolves its `@Port` parameters, passing every one by keyword, so an
+   adapter constructor's own `bootstrap=` never fires during a build;
+4. instantiates dependencies first, then the adapter, and checks the instance satisfies the port;
+5. builds each `SINGLETON` once and caches it, and rebuilds `TRANSIENT` ones each time
    (`lifecycle=` also accepts the lowercase strings `'singleton'` and `'transient'`);
-5. on a constructor, assigns every port parameter to `self.<name>`, then runs the body; a function
+6. on a constructor, assigns every port parameter to `self.<name>`, then runs the body; a function
    just receives them as keyword arguments.
 
 Dependency order is worked out at resolution time, not registration time, so registration order
@@ -90,6 +95,7 @@ raises before a single constructor in that graph has run.
 @Invert()  # infer ports from the type hints
 @Invert(keys={'basket': 'wild'})  # pick keyed adapters per parameter (declared after '*')
 @Invert({'basket': AppleBasketPort})  # explicit param -> port, for a hint that is not a port
+@Invert(bootstrap='my_lib')  # discover my_lib first when a port is missing; mixes with the rest
 ```
 
 - **On a constructor it assigns `self.<name>`** for every port parameter, injected or
@@ -136,20 +142,41 @@ raises before a single constructor in that graph has run.
 - **Explicit mapping.** `@Invert({'param': SomePort})` injects a parameter whose annotation is
   missing or is not a port. If the parameter is annotated with a `@Port` as well, `@Invert` raises
   `InvalidPortError`: one parameter, one contract. An adapter constructor's map is honoured too.
+- **Bootstrapping on first use.** `bootstrap='my_lib'` (keyword-only, a dotted package name spelled
+  as you would `import` it) is for libraries. A call that leaves at least one port parameter to
+  injection, an optional one included (discovery is what decides whether an adapter exists), first
+  runs the public `Idunn().bootstrap('my_lib')` with its default options, once per call at most. So
+  it inherits the gate whole: cached per root until `reset()`, one discovery shared by concurrent
+  first calls, safe at import time and on re-entry, and a failure (a `DiscoveryError`, a root that
+  does not import) propagates unwrapped and is retried by the next call. A call that supplies every
+  port discovers nothing. Nothing is imported at decoration, and the root is not even looked up. The
+  resolver passes an adapter constructor every planned port, fallbacks included, so an adapter
+  wearing `bootstrap=` never discovers while it is being built as a dependency. `exclude` and
+  `strict` are not on offer: a library that needs them calls
+  `Idunn().bootstrap('my_lib', exclude=...)` itself first, and the first call for a root wins.
+  `bootstrap=` on a function with no port parameters could never fire, so it raises `TypeError`.
 - **Checked at decoration.** A mistake fails at import, next to its culprit. A map value that is
   not a port, a map entry on a port-annotated parameter, and a key on a parameter that is not a
   port raise `InvalidPortError`. A key that is not a `str`, a mapped or keyed name that is not a
   parameter (the instance slot, `*args` and `**kwargs` do not count), a port parameter (annotated,
-  mapped or keyed) that is not keyword-only, a second `@Invert` on the same function, `@Invert()`
+  mapped or keyed) that is not keyword-only, a `bootstrap` that is not a non-empty `str` or that
+  sits on a function with no port parameters, a second `@Invert` on the same function, `@Invert()`
   on anything but a function, and `@Invert()` above `@staticmethod` or `@classmethod` raise
   `TypeError`. It belongs beneath them, on the plain function, where it has a function to wrap;
-  above them it would hand the class a plain function where a descriptor belongs.
+  above them it would hand the class a plain function where a descriptor belongs. A `bootstrap`
+  string that is not a dotted run of identifiers (`'.relative'`, `'my lib'`, `'a..b'`) raises
+  `ValueError`, judged from the spelling alone, since looking it up is exactly what decoration
+  must not do.
 - **Forward references.** A hint may name a class defined further down the module, or the class
   being defined (`parent: Node | None` inside `Node`), wherever Python allows it:
   `from __future__ import annotations`, or 3.14 without it. The shape checks read the function's
-  code object and never evaluate a hint, so they still fire at decoration. The three checks that
+  code object and never evaluate a hint, so they still fire at decoration. The four checks that
   need the hints (map versus annotation, keys on ports only, port-annotated parameters
-  keyword-only) wait for the first call if a hint cannot resolve yet, and raise there instead.
+  keyword-only, `bootstrap=` with a port to fire for) wait for the first call if a hint cannot
+  resolve yet, and raise there instead, before any discovery. An adapter constructor cannot wait,
+  since the resolver plans it on the way to building it, so a hint that does not resolve then (a
+  port defined inside a function under `from __future__ import annotations`, say) raises
+  `MissingTypeHintError` naming the adapter and the name, and the next build tries again.
 - **Parentheses are required.** `Invert` is a class; applying it bare raises `TypeError` at
   decoration rather than something stranger later.
 
@@ -325,15 +352,17 @@ Idunn().autodiscover(
   threads' discoveries each need a module the other is halfway through importing, Python breaks
   the tie itself: one of those imports fails, discovery treats it like any other import error, and
   a retry is safe. Whatever the failed attempt's other runs registered stays registered, and the
-  retry's cached report lists it too.
+  retry's cached report lists it too. `@Invert(bootstrap=...)` is just another caller, with the
+  default options: to discover with `exclude=`, call `bootstrap` yourself before the first
+  consumer does.
 - **Re-entrant and import-time `bootstrap`.** A module may call `bootstrap` while it is being
   imported, in this thread or another, and that includes a module under the root calling it for
-  its own root. Every such run is merged into the one cached report, so nothing it registers goes
-  missing, wherever in the module the call sits. The call itself returns its own run's report,
-  which lists only what that run could see: a module that calls at its top has defined nothing yet.
-  The first call normally returns the cached report itself. Only when an import-time run outlives
-  it (one started by a module outside the root, say) does it get the merge so far, and the cache
-  gets the rest when that run finishes.
+  its own root, or building an `@Invert(bootstrap=...)` consumer that does. Every such run is
+  merged into the one cached report, so nothing it registers goes missing, wherever in the module
+  the call sits. The call itself returns its own run's report, which lists only what that run could
+  see: a module that calls at its top has defined nothing yet. The first call normally returns the
+  cached report itself. Only when an import-time run outlives it (one started by a module outside
+  the root, say) does it get the merge so far, and the cache gets the rest when that run finishes.
 
 ---
 
@@ -448,6 +477,11 @@ def test_feast_with_the_real_thing() -> None:
   injected (a consumer, another adapter's constructor, an optional parameter). A caller-supplied
   argument still wins. A port not marked `@Port` raises `InvalidPortError`, and an instance that
   does not satisfy the port raises `InvalidAdapterError`, both before the block runs.
+- A library's `bootstrap=` consumer discovers into whatever block is open, so `install` a rival
+  adapter for one of the library's ports and the library's own adapter lands in the same slot:
+  `InvalidAdapterError` at the consumer's first use, an `override` on top notwithstanding (the port
+  is still left to injection), or at the `install` itself once the root is discovered. To stand in
+  for a library's port, `override` it, or pass it by name.
 - On exit, error or not, a block puts back exactly what it found: registrations, singletons,
   overrides, `bootstrap` reports and the environment. A singleton built against a fake leaves
   with the fake, and a `bootstrap` inside an install leaves no report vouching for registrations
@@ -481,17 +515,18 @@ class below:
 | `InvalidAdapterError` | `@Adapter` is applied to a non-class or twice to one class, `Harness.install` is handed a class that never wore `@Adapter` (an undecorated subclass of an adapter included), two adapters collide (the discovery run or `Harness.install` that hits it registers nothing), or a built instance or a `Harness.override` stand-in does not satisfy its port. |
 | `AdapterNotFoundError` | No active adapter exists for a requested port and the parameter is not optional. |
 | `DiscoveryError` | A module below the discovery root fails to import and `strict=True`, or the root package does not live in a directory (a zip, say), whatever `strict` says. |
-| `MissingTypeHintError` | An adapter constructor parameter without a default has no annotation, or one that is not a port. |
+| `MissingTypeHintError` | An adapter constructor parameter without a default has no annotation, or one that is not a port, or a constructor hint does not resolve (chained from the `NameError`). |
 | `InjectionCycleError` | Constructor resolution loops back on an adapter already under construction. A loop through a `SINGLETON` is found before anything is built. |
 
 A few mistakes are caught by plain Python exceptions instead: an invalid environment name (one that
-is not a `str` included) or `lifecycle` string raises `ValueError`; bare `@Invert`, the `@Invert`
-shape mistakes listed under [the contract](#the-invert-contract-in-full), an adapter key that is not
-a `str` (in `@Adapter`, `@Invert(keys=...)` or `Harness.override`; a `StrEnum` member is one), too
-many positional arguments to an `@Invert` constructor or function, a positional-only port on an
-adapter constructor and `Idunn(...)` with arguments raise `TypeError`; and a discovery root that
-will not import raises its own import error. Every Idunn message names the culprit as
-`module.QualName`, so two `Feast`s in two modules are never confused.
+is not a `str` included), `lifecycle` string or `@Invert(bootstrap=...)` spelling raises
+`ValueError`; bare `@Invert`, the `@Invert` shape mistakes listed under
+[the contract](#the-invert-contract-in-full), an adapter key that is not a `str` (in `@Adapter`,
+`@Invert(keys=...)` or `Harness.override`; a `StrEnum` member is one), too many positional
+arguments to an `@Invert` constructor or function, a positional-only port on an adapter constructor
+and `Idunn(...)` with arguments raise `TypeError`; and a discovery root that will not import raises
+its own import error. Every Idunn message names the culprit as `module.QualName`, so two `Feast`s in
+two modules are never confused.
 
 ---
 
@@ -508,7 +543,8 @@ The limitations are prices paid for a single process-wide container:
   - *Registration* is copy-on-write: a batch swaps in a whole new catalog under one lock, and
     readers never lock and never see half a registration.
   - *`bootstrap`* runs one discovery per root and holds no lock while modules import, so it is
-    safe from any thread, during an import included.
+    safe from any thread, during an import included. `@Invert(bootstrap=...)` calls the same
+    method, so it is exactly as safe.
   - *Each `SINGLETON` is built once.* A first build takes a lock of that adapter's own and checks
     the cache again inside it, so racing threads get one instance between them. The warm path is a
     dictionary lookup with no lock, and unrelated singletons never wait on each other.
@@ -523,6 +559,11 @@ The limitations are prices paid for a single process-wide container:
     can deadlock. Build-once leaves no way round that, so keep imports out of constructors.
   - For the same reason, a constructor must never wait on another thread that needs the very
     singleton being built.
+  - Building an `@Invert(bootstrap=...)` consumer counts as calling `bootstrap`. Built inside a
+    singleton's constructor with a port left to inject, it bootstraps under that singleton's lock
+    whenever its root is not cached yet, so the import warning two points up applies. Bootstrap the
+    root before the singleton's first build, or hand the consumer its ports. The resolver itself
+    never sets one off: building an adapter as a dependency supplies every port.
   - An `@Invert()` consumer created *inside* a constructor while a singleton is being built (in
     the singleton's own constructor or a `TRANSIENT`'s beneath it) is part of that build: it
     picks up the path at the innermost singleton, so a loop through it raises
@@ -575,25 +616,32 @@ edge would otherwise slip past the matrix unseen. For a class-by-class map of th
 
 Day to day, `poetry run pytest` runs everything on the development interpreter, 3.13.16 in the
 in-project `.venv`. The end-to-end files, `tests/test_integration.py` (the public API over
-generated packages) and `tests/test_examples.py` (every example, run as a script), carry the
-`integration` marker; the discovery and bootstrap tests write packages too, but each pins one
-rule, so they count as unit tests. `bin/devtool` wraps the lot:
+generated packages) and `tests/test_examples.py`, carry the `integration` marker; the discovery
+and bootstrap tests write packages too, but each pins one rule, so they count as unit tests. The
+examples test runs every example as a script once per name on its docstring's `Environments:`
+line, against `expected.<name>.txt` (`unset` means no `IDUNN_ENV`, against `expected.txt`), fails
+on a missing or stray expected file, and checks discovery against its `Registers:` line, which
+names classes relative to the example package (`shop.till.Till`), so a class that moves module
+fails too. `bin/devtool` wraps the lot, from any directory in the repository:
 
 ```bash
+poetry run bin/devtool test lint          # Ruff's linter and formatter, then mypy; --fix to rewrite
 poetry run bin/devtool test unit          # everything not marked integration
 poetry run bin/devtool test integration   # only the integration marker
-poetry run bin/devtool test all           # everything, on 3.13.16 and then on Python 3.14
+poetry run bin/devtool test all           # lint, then everything on 3.13.16 and on Python 3.14
 ```
 
-`test all` runs twice on purpose. Python 3.14 defers annotations (PEP 649), so two `@Invert`
-contract tests, an unquoted forward reference with no `from __future__ import annotations` and the
-shape checks that must never evaluate a hint, only mean anything there; on older interpreters they
-skip, and a green 3.13 run would never notice them breaking. So after the poetry run, `test all`
-picks the newest CPython 3.14.x that pyenv has (free-threaded builds aside, and installing pyenv's
-latest 3.14 if there is none), keeps a venv for it in the git-ignored `tmp/venv-3.14` (rebuilt
-when its interpreter differs, reinstalled when `pyproject.toml` changes), and runs the suite again
-with the same `-k`, `-sv` and `-n` options; coverage belongs to the poetry run alone. Each
-interpreter's verdict is printed on its own line, and either one failing fails the command.
+`test all` lints first, then runs the suite twice on purpose. Python 3.14 defers annotations
+(PEP 649), so two `@Invert` contract tests, an unquoted forward reference with no
+`from __future__ import annotations` and the shape checks that must never evaluate a hint, only
+mean anything there; on older interpreters they skip, and a green 3.13 run would never notice them
+breaking. So after the poetry run, `test all` picks the newest CPython 3.14.x that pyenv has
+(free-threaded builds aside, and installing pyenv's latest 3.14 if there is none), keeps a venv for
+it in the git-ignored `tmp/venv-3.14` (rebuilt when its interpreter differs, reinstalled when
+`pyproject.toml` changes, and spared by `bin/devtool build clean`, which empties the rest of
+`tmp/`), and runs the suite again with the same `-k`, `-sv` and `-n` options; coverage belongs to
+the poetry run alone. Each interpreter's verdict is printed on its own line, as is lint's, and any
+one failing fails the command.
 
 CI goes wider: a `quality` job runs once on 3.13.16 (`poetry check --lock`, format, lint and
 strict mypy), and a `test` job runs pytest on 3.11, 3.12, 3.13.16 and 3.14. Before calling a
@@ -601,7 +649,6 @@ change done, run the same gate locally:
 
 ```bash
 poetry check --lock
-poetry run ruff format --check . && poetry run ruff check . && poetry run mypy
 poetry run bin/devtool test all
 ```
 
@@ -619,7 +666,8 @@ the concurrency tests ten times per interpreter before calling them green:
 ```bash
 for _ in $(seq 10); do
   poetry run pytest -q tests/test_concurrency.py tests/test_catalog.py tests/test_injection.py \
-    tests/test_harness.py tests/test_bootstrap.py tests/test_bootstrap_gate.py
+    tests/test_harness.py tests/test_bootstrap.py tests/test_bootstrap_gate.py \
+    tests/test_invert_bootstrap.py
 done
 ```
 
@@ -632,11 +680,28 @@ keeps a few seams: `Wiring`, a standalone mapper plus resolver; `Resolve.port(..
 one port through the facade's private door; `PackageWriter`, for throwaway packages to discover;
 and `Racer`.
 
+### Images
+
+`docs/images/` holds six images, and the docs use two of them. The other four are brand assets,
+kept on purpose though no page references them, so an unreferenced image there is not litter. Two
+file names promise sizes the files do not have; the table gives the real ones.
+
+| File | Pixels, bytes | Shows | Used |
+|---|---|---|---|
+| `idunn-apple-square-50.png` | 50 x 50, 6.4 KiB | The golden apple, a knotwork heart on its face and two leaves on the stem. | The separator between `##` sections in the README and the docs. |
+| `idunn-landscape-2560x900.png` | 2172 x 724, 1.9 MiB | A banner: the apple and the `idunn` wordmark on a dark panel with a gold knotwork border, flanked by four round icons (a cube, a gear, `</>` and a database). | The header at the top of the README, ABOUT and this file. |
+| `idunn-apple-square-800.png` | 800 x 800, 645 KiB | The same apple as the separator, large. | Kept as a brand asset. |
+| `idunn-logo-figure.png` | 1100 x 1400, 3.4 MiB | An illustrated portrait: a woman with long golden hair holds a glowing apple aloft and a basket of apples, beside a standing stone carved with the apple, the four icons on a small tree and the `idunn` wordmark, in a gold frame. | Kept as a brand asset. |
+| `logo-mountain-1600x900.png` | 1672 x 941, 2.5 MiB | The apple in a ring of runes above the four icons on a branching line, the `idunn` wordmark beside it, over a night sky with mountains and pines, in a gold knotwork border. | Kept as a brand asset. |
+| `logo-square-1200.png` | 1200 x 1200, 2.3 MiB | A square badge: the apple over a faint ring of runes, the four icons beneath it and the `idunn` wordmark below, on a dark rounded square with gold knotwork corners. | Kept as a brand asset. |
+
 ### Releasing
 
 Before a release, check `authors`, the project URLs and the classifiers in `pyproject.toml`, and
 give the release its entry in [`CHANGELOG.md`](../CHANGELOG.md). What changed, breaking or not, is
-written down there once, so these notes do not keep a second copy to fall out of date. Then:
+written down there once, so these notes do not keep a second copy to fall out of date. The README's
+links are absolute `https://github.com/terracoil/idunn/...` URLs, because the README is the PyPI
+long description and a relative link there leads nowhere; links inside `docs/` stay relative. Then:
 
 ```bash
 poetry build

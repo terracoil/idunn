@@ -7,6 +7,7 @@ from contextlib import suppress
 from typing import Any
 
 from idunn.domain import FunctionShape, InvertDeclaration, ParameterPlan
+from idunn.util import QualifiedName
 
 from .constructor_planner import ConstructorPlanner
 
@@ -16,9 +17,11 @@ class LazyPlan:
   At decoration a hint may name a class defined further down the module (or the class being
   defined, as in ``Node | None``), which raises ``NameError`` until the module finishes. So
   :meth:`try_now` plans and swallows exactly that, and :meth:`get` retries on first call, when the
-  name exists. Every other error, an annotation rule broken included, still surfaces at decoration.
-  It lives in the wrapper's closure, one per decorated function, because one ``Invert(...)`` can
-  decorate several. Two threads racing the first :meth:`get` build identical plans; one wins.
+  name exists. Every other error, an annotation rule broken included, still surfaces at decoration,
+  and so does ``bootstrap=`` on a function with no port parameters, the one rule that needs the
+  finished plan. It lives in the wrapper's closure, one per decorated function, because one
+  ``Invert(...)`` can decorate several. Two threads racing the first :meth:`get` build identical
+  plans; one wins.
   """
 
   __slots__ = ('_declaration', '_function', '_plan', '_shape')
@@ -43,6 +46,7 @@ class LazyPlan:
       plan = ConstructorPlanner.plan(
         self._function, shape=self._shape, declaration=self._declaration
       )
+      self._refuse_idle_bootstrap(plan)
       self._plan = plan
     return plan
 
@@ -50,6 +54,18 @@ class LazyPlan:
   def ready(self) -> bool:
     """Whether the plan exists yet; ``False`` only while a forward reference holds it up."""
     return self._plan is not None
+
+  def _refuse_idle_bootstrap(self, plan: tuple[ParameterPlan, ...]) -> None:
+    # bootstrap= fires only when a port is missing, so with no ports it never could: a declaration
+    # that never fires is a lie. Here, not in the planner, because only the wrapper's plan counts.
+    root: str | None = self._declaration.bootstrap
+    if root is not None and not plan:
+      message: str = (
+        f'@Invert(bootstrap={root!r}) on {QualifiedName.of(self._function)} has no port '
+        'parameters, so it could never bootstrap anything: drop bootstrap=, or call '
+        f'Idunn().bootstrap({root!r}) yourself'
+      )
+      raise TypeError(message)
 
   def try_now(self) -> bool:
     """Plan at once unless a hint is still a forward reference; return whether it worked."""

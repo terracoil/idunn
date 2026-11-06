@@ -3,6 +3,8 @@ Adapter constructors decorated with ``@Invert`` get their own keys and map honou
 undecorated ones resolve unkeyed, and each adapter's plan is worked out once until ``clear()``.
 """
 
+import importlib
+from types import ModuleType
 from typing import Protocol, cast
 
 import pytest
@@ -18,8 +20,9 @@ from idunn import (
   MissingTypeHintError,
   Port,
 )
+from idunn.testing import Harness
 
-from _support import Wiring
+from _support import PackageWriter, Wiring
 
 
 def test_constructor_time_injection() -> None:
@@ -739,3 +742,157 @@ def test_a_positional_only_port_on_an_adapter_raises_type_error() -> None:
 
   with pytest.raises(TypeError, match=r'Reminder\.notifier is a positional-only port'):
     table.resolve(ReminderPort)
+
+
+class Unresolved:
+  """A generated module whose adapters' hints name what no module namespace holds, or not yet."""
+
+  # `local_feast` hides its port inside a function, where `from __future__ import annotations`
+  # leaves a string nothing can resolve; LaterFeast waits for a LaterPort the test hands in.
+  SOURCE = """
+    from __future__ import annotations
+
+    from typing import Protocol
+
+    from idunn import Adapter, Invert, LifecycleEnum, Port
+
+    BUILT: list[str] = []
+
+    @Port
+    class BasketPort(Protocol):
+      def take(self) -> str: ...
+
+    @Port
+    class FeastPort(Protocol):
+      def serve(self) -> str: ...
+
+    @Port
+    class CountedPort(Protocol):
+      pass
+
+    @Port
+    class TopPort(Protocol):
+      pass
+
+    @Adapter(BasketPort)
+    class GoldenBasket:
+      def take(self) -> str:
+        return 'golden'
+
+    @Adapter(FeastPort)
+    class LaterFeast:
+      def __init__(self, *, basket: LaterPort) -> None:
+        self.basket = basket
+
+      def serve(self) -> str:
+        return self.basket.take()
+
+    def local_feast() -> type:
+      @Port
+      class LocalBasketPort(Protocol):
+        def take(self) -> str: ...
+
+      @Adapter(FeastPort)
+      class LocalFeast:
+        def __init__(self, *, basket: LocalBasketPort) -> None:
+          self.basket = basket
+
+        def serve(self) -> str:
+          return self.basket.take()
+
+      return LocalFeast
+
+    @Adapter(CountedPort)
+    class Counted:
+      def __init__(self) -> None:
+        BUILT.append('counted')
+
+    @Adapter(TopPort, lifecycle=LifecycleEnum.SINGLETON)
+    class Top:
+      def __init__(self, *, counted: CountedPort, feast: FeastPort) -> None:
+        pass
+
+    class Hints:
+      @staticmethod
+      def gave_up() -> type:
+        raise NameError('the hint factory gave up')
+
+    @Adapter(FeastPort)
+    class Fussy:
+      def __init__(self, *, basket: Hints.gave_up()) -> None:
+        pass
+
+      def serve(self) -> str:
+        return 'never'
+
+    @Invert()
+    def serve(*, feast: FeastPort) -> str:
+      return feast.serve()
+  """
+
+  @staticmethod
+  def load(writer: PackageWriter, name: str) -> ModuleType:
+    """Write the source as top-level module ``name`` (one per test: ``sys.modules`` lingers)."""
+    writer.module(name, Unresolved.SOURCE)
+    return importlib.import_module(name)
+
+
+def test_an_unresolvable_adapter_hint_raises_missing_type_hint_error_naming_both(
+  writer: PackageWriter,
+) -> None:
+  module = Unresolved.load(writer, 'unresolved_local')
+
+  with pytest.raises(MissingTypeHintError) as missing:
+    Wiring.of(module.local_feast()).resolve(module.FeastPort)
+
+  assert f'{module.__name__}.local_feast.<locals>.LocalFeast' in str(missing.value)
+  assert 'raised "name \'LocalBasketPort\' is not defined"' in str(missing.value)
+  assert isinstance(missing.value.__cause__, NameError)
+
+
+def test_a_name_error_raised_inside_a_hint_is_quoted_not_mistaken_for_a_missing_name(
+  writer: PackageWriter,
+) -> None:
+  # A hint that calls something can raise a NameError naming nothing; the message must not invent.
+  module = Unresolved.load(writer, 'unresolved_fussy')
+
+  with pytest.raises(MissingTypeHintError) as missing:
+    Wiring.of(module.Fussy).resolve(module.FeastPort)
+
+  assert 'Fussy: evaluating its type hints raised "the hint factory gave up"' in str(missing.value)
+  assert 'None' not in str(missing.value)
+  assert isinstance(missing.value.__cause__, NameError)
+
+
+def test_an_unresolvable_adapter_hint_is_not_cached_and_resolves_once_the_name_exists(
+  writer: PackageWriter,
+) -> None:
+  module = Unresolved.load(writer, 'unresolved_later')
+  table = Wiring.of(module.GoldenBasket, module.LaterFeast)
+
+  with pytest.raises(MissingTypeHintError, match="name 'LaterPort' is not defined"):
+    table.resolve(module.FeastPort)
+  vars(module)['LaterPort'] = module.BasketPort
+
+  assert table.resolve(module.FeastPort).serve() == 'golden'
+
+
+def test_the_singleton_cycle_walk_raises_it_before_anything_is_built(
+  writer: PackageWriter,
+) -> None:
+  module = Unresolved.load(writer, 'unresolved_walk')
+
+  # Counted comes first in Top's plan, so only the walk explains it never being built.
+  with pytest.raises(MissingTypeHintError, match="name 'LocalBasketPort' is not defined"):
+    Wiring.of(module.Counted, module.local_feast(), module.Top).resolve(module.TopPort)
+  assert module.BUILT == []
+
+
+def test_a_harness_installed_adapter_raises_it_through_an_invert_consumer(
+  writer: PackageWriter,
+) -> None:
+  module = Unresolved.load(writer, 'unresolved_harness')
+
+  with Harness.install(module.local_feast()), pytest.raises(MissingTypeHintError) as missing:
+    module.serve()
+  assert 'LocalFeast: evaluating its type hints raised' in str(missing.value)

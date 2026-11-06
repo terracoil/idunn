@@ -9,10 +9,12 @@ until the test hands it one.
 
 import functools
 import importlib
+import importlib.abc
 import inspect
 import re
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from enum import Enum, StrEnum
 from types import ModuleType
 from typing import Any, Protocol
 
@@ -35,6 +37,18 @@ class BasketPort(Protocol):
 class GoldenBasket(BasketPort):
   def take(self) -> str:
     return 'golden'
+
+
+class LookupLog(importlib.abc.MetaPathFinder):
+  """A finder, first in line, that declines everything and remembers every name it was asked for."""
+
+  def __init__(self) -> None:
+    self.names: list[str] = []
+
+  def find_spec(
+    self, fullname: str, path: Sequence[str] | None, target: ModuleType | None = None
+  ) -> None:
+    self.names.append(fullname)
 
 
 class Sources:
@@ -203,6 +217,87 @@ def test_a_key_that_is_not_a_str_raises_type_error() -> None:
     Invert(keys={'basket': 7})  # type: ignore[dict-item]
 
 
+def test_bootstrap_is_keyword_only_and_off_by_default() -> None:
+  parameter = inspect.signature(Invert).parameters['bootstrap']
+
+  assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+  assert parameter.default is None
+  assert InvertDeclaration.frozen(ports={}, keys={}).bootstrap is None
+
+
+@pytest.mark.parametrize(
+  ('root', 'shown'),
+  [('', "''"), (7, '7'), (b'my_lib', "b'my_lib'"), (BasketPort, f'{__name__}.BasketPort')],
+)
+def test_a_bootstrap_that_is_not_a_non_empty_str_raises_naming_it(root: object, shown: str) -> None:
+  # Anchored at the end, since "<class '....BasketPort'>" holds the qualified name too.
+  with pytest.raises(TypeError, match=f'bootstrap= must be a non-empty str.*: {re.escape(shown)}$'):
+    Invert(bootstrap=root)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize('root', ['.relative', 'my_lib.', 'my lib', '   ', 'a..b', 'my-lib', '1st'])
+def test_a_bootstrap_str_of_the_wrong_shape_raises_value_error_naming_it(root: str) -> None:
+  # The type was right and the spelling was not, so ValueError rather than TypeError.
+  shown: str = re.escape(repr(root))
+  with pytest.raises(ValueError, match=f'every part is a Python identifier.*: {shown}$'):
+    Invert(bootstrap=root)
+
+
+class SpacedRoot(StrEnum):
+  SPACED = 'mead hall'
+
+
+class DottedRoot(str, Enum):
+  # str() says 'DottedRoot.SPACED', a fine dotted name: a check on str() would wave it through.
+  SPACED = 'mead hall'
+
+
+@pytest.mark.parametrize(
+  'root', [SpacedRoot.SPACED, DottedRoot.SPACED], ids=['StrEnum', 'str-Enum']
+)
+def test_an_enum_root_of_the_wrong_shape_raises_naming_its_plain_value(root: str) -> None:
+  with pytest.raises(ValueError, match=r": 'mead hall'$"):
+    Invert(bootstrap=root)
+
+
+@pytest.mark.parametrize('root', ['mead', 'my_lib.adapters', '_private.pkg', 'mjöð', 'class.def'])
+def test_any_dotted_run_of_identifiers_is_a_root_even_one_nobody_could_import(root: str) -> None:
+  # Shape is all decoration can judge without a lookup; 'class.def' fails later, at import.
+  def pick(*, basket: BasketPort) -> str:
+    return basket.take()
+
+  declaration = InvertDeclaration.of(Invert(bootstrap=root)(pick))
+
+  assert declaration is not None
+  assert declaration.bootstrap == root
+
+
+def test_a_bare_invert_still_raises_its_own_message_not_the_bootstraps() -> None:
+  def pick(*, basket: BasketPort) -> str:
+    return basket.take()
+
+  with pytest.raises(TypeError, match='must be applied with parentheses'):
+    Invert(pick)  # type: ignore[arg-type]
+
+
+def test_decoration_never_imports_or_looks_up_the_root(monkeypatch: pytest.MonkeyPatch) -> None:
+  # The root does not exist, so sys.modules could not tell an import that failed quietly, or a
+  # find_spec, from no lookup at all. A finder asked before any other can.
+  log = LookupLog()
+  monkeypatch.setattr(sys, 'meta_path', [log, *sys.meta_path])
+
+  @Invert(bootstrap='contract_root_that_does_not_exist.deeper')
+  def pick(*, basket: BasketPort) -> str:
+    return basket.take()
+
+  assert pick(basket=GoldenBasket()) == 'golden'  # every port supplied: no reason to look
+  assert [name for name in log.names if name.startswith('contract_root')] == []
+  assert 'contract_root_that_does_not_exist' not in sys.modules
+  with pytest.raises(ModuleNotFoundError):  # the first call that needs the root does ask, though
+    pick()
+  assert 'contract_root_that_does_not_exist' in log.names
+
+
 # Annotation rules: decoration when the hints resolve.
 
 
@@ -248,6 +343,34 @@ def test_the_declaration_rides_on_the_wrapper() -> None:
   assert declaration is not None
   assert dict(declaration.keys) == {'basket': 'golden'}
   assert InvertDeclaration.of(GoldenBasket.__init__) is None
+
+
+def test_the_declaration_carries_the_bootstrap_root_as_a_plain_str() -> None:
+  class Root(StrEnum):
+    MEAD = 'mead'
+
+  class Feast:
+    @Invert(keys={'basket': 'golden'}, bootstrap=Root.MEAD)
+    def __init__(self, *, basket: BasketPort) -> None:
+      pass
+
+  declaration = InvertDeclaration.of(Feast.__init__)
+
+  assert declaration is not None
+  assert declaration.bootstrap == 'mead'
+  assert type(declaration.bootstrap) is str
+  assert dict(declaration.keys) == {'basket': 'golden'}
+  assert declaration.names == {'basket'}  # the root names no parameter
+
+
+def test_a_stacked_invert_is_refused_whichever_one_bootstraps() -> None:
+  with pytest.raises(TypeError, match='more than once'):
+
+    class Feast:
+      @Invert(bootstrap='mead')
+      @Invert()
+      def __init__(self, *, basket: BasketPort) -> None:
+        pass
 
 
 def test_the_declaration_is_a_frozen_copy_of_what_the_caller_passed() -> None:

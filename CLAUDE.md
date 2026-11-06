@@ -7,7 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Poetry project, in-project `.venv`, with `poetry.lock` committed. `bin/devtool` (a Freyja CLI, run
 as `poetry run bin/devtool ...`) wraps the same commands and also handles tagging and publishing.
 It finds the repo root from its own path (`REPO_ROOT`), so it works from any directory, and
-`build clean` empties `tmp/` except the `venv-*` directories and `.gitkeep` (never `tmp/` itself).
+`build clean` empties `tmp/` except the `venv-*` directories and `.gitkeep` (never `tmp/` itself)
+and removes a symlink as a link, never following it to what lies outside the repo.
 `bin/devtool test lint` runs `ruff check`, `ruff format --check` and mypy, every step even after
 one fails, and exits non-zero if any did; `--fix` rewrites instead of reporting, `--skip-mypy` and
 `--clean` (clear Ruff's cache) do what they say. `bin/devtool test all|unit|integration` runs

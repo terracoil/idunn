@@ -31,6 +31,13 @@ class BootstrapGate:
     self._lock: Lock = Lock()
     self._generation: BootstrapGeneration = BootstrapGeneration(reports={}, flights={}, carried={})
 
+  def cached(self, root_package: str) -> ReportMap | None:
+    """Return the report cached for ``root_package``, or ``None``; one lock-free dictionary read.
+    The warm path for callers that would otherwise build a ``discover`` callable just to be told
+    the answer was already here, which ``@Invert(bootstrap=...)`` asks on every call.
+    """
+    return self._generation.reports.get(root_package)
+
   def clear(self) -> None:
     """Forget every cached report. Runs still in flight finish into the generation they started in.
     Swapping the maps, rather than emptying them, is what lets a stale run land somewhere harmless.

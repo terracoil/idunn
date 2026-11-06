@@ -19,10 +19,11 @@ class InvalidPortError(IdunnError):
 
 class InvalidAdapterError(IdunnError):
   """Raised when an adapter cannot be trusted with its port.
-  That covers ``@Adapter`` on a non-class, ``@Adapter`` applied twice to one class, two adapters
-  sharing a port and key in overlapping environments (the batch that hits it, discovery's or
-  ``Harness.install``'s, registers nothing), and a built instance or a ``Harness.override``
-  stand-in that does not satisfy its port.
+  That covers ``@Adapter`` on a non-class, ``@Adapter`` applied twice to one class,
+  ``Harness.install`` handed a class that never wore ``@Adapter`` (an undecorated subclass of an
+  adapter included), two adapters sharing a port and key in overlapping environments (the batch
+  that hits it, discovery's or ``Harness.install``'s, registers nothing), and a built instance or
+  a ``Harness.override`` stand-in that does not satisfy its port.
   """
 
 
@@ -40,7 +41,9 @@ class DiscoveryError(IdunnError):
 
 class MissingTypeHintError(IdunnError):
   """Raised when an adapter constructor parameter has no default and Idunn cannot supply it.
-  The name undersells it: an annotation that is not a ``@Port`` counts as missing too.
+  The name undersells it: an annotation that is not a ``@Port`` counts as missing too, and so does
+  a constructor hint that does not resolve, such as a port defined inside a function under
+  ``from __future__ import annotations`` (chained from the ``NameError``).
   """
 
 

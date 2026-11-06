@@ -1,23 +1,16 @@
 """The library's public entry point."""
 
-from typing import Final
-
-from idunn import Idunn
-
 from .cupbearer import Cupbearer
 
 
 class MeadHall:
   """The front door, and the only name the library exports.
-  A library is imported, not started, so it has no startup hook to discover from. Each entry point
-  bootstraps the library's own root instead: the first call discovers, later calls are a cache hit.
+  It wires nothing itself: the ``Cupbearer`` it hires wears ``@Invert(bootstrap=...)``, so the
+  library wires itself the first time anyone pours, and a second hall is a cache hit.
   """
 
-  ROOT: Final[str] = 'examples.classy.complex.mead'  # plain 'mead' if it shipped on its own
-
   def __init__(self) -> None:
-    """Wire the library on first use, then hire a cupbearer from the freshly wired graph."""
-    Idunn().bootstrap(self.ROOT)
+    """Hire a cupbearer; the first one hired wires the library on the way in."""
     self._cupbearer: Cupbearer = Cupbearer()
 
   def pour(self, guest: str) -> str:

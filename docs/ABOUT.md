@@ -172,9 +172,10 @@ report = Idunn().autodiscover('telemetry')  # imports and registers every @Port/
 
 That is the single registration step for an application. The module names inside `telemetry` are
 yours to choose; the decorator is what counts. A library, which has no startup to speak of, calls
-`Idunn().bootstrap('telemetry')` from its entry points instead and gets the same result on first
-use. Either way the call returns a `ReportMap` of what was imported and newly registered, handy for
-a startup log.
+`Idunn().bootstrap('telemetry')` from its entry points instead, or lets its consumers say
+`@Invert(bootstrap='telemetry')` and make the call for it, and gets the same result on first use.
+Either way the call returns a `ReportMap` of what was imported and newly registered, handy for a
+startup log.
 
 ### One adapter, zero decisions
 

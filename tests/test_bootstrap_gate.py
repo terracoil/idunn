@@ -118,6 +118,19 @@ def test_first_run_is_cached_and_never_repeated() -> None:
   assert (first_run.calls, never.calls) == (1, 0)
 
 
+def test_cached_reads_the_cache_without_running_anything() -> None:
+  # The facade's warm path: a cached root never builds a discover callable at all.
+  gate = BootstrapGate()
+  assert gate.cached(ROOT) is None
+
+  first = Within.run(gate, Stub(Runs.report()))
+
+  assert gate.cached(ROOT) is first
+  assert gate.cached('another_root') is None
+  gate.clear()
+  assert gate.cached(ROOT) is None
+
+
 def test_reentrant_run_returns_its_own_report_and_the_cache_merges_both() -> None:
   gate = BootstrapGate()
   nested_report = Runs.report(

@@ -20,6 +20,6 @@ if __name__ == '__main__':
   print(Stall('Idunn').sell('Freyja', 2))  # a new stall and a new till, but the same storeroom
   print(Stocktaker().report())
   print(MeadHall().pour('Thor'))
-  print(MeadHall().pour('Loki'))  # this hall's bootstrap is a cache hit
+  print(MeadHall().pour('Loki'))  # this hall's cupbearer finds the library already wired
   print()
   print(Idunn().describe())

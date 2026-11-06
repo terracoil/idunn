@@ -12,9 +12,12 @@ The name comes from **Iðunn**, the Norse keeper of the apples that keep the god
 empty basket, an adapter is the apple you put in it, and a consumer just asks for the basket. Nobody
 has to know which orchard it came from, which is rather the point of dependency inversion.
 
-This file is the everyday reference. **[About Idunn](./docs/ABOUT.md)** explains why it looks the
-way it does, and **[Advanced](./docs/ADVANCED.md)** covers environments, keys, testing with
-`idunn.testing` and the engine, for the days the everyday is not enough.
+This file is the everyday reference.
+**[About Idunn](https://github.com/terracoil/idunn/blob/master/docs/ABOUT.md)** explains why it
+looks the way it does, and
+**[Advanced](https://github.com/terracoil/idunn/blob/master/docs/ADVANCED.md)** covers
+environments, keys, testing with `idunn.testing` and the engine, for the days the everyday is not
+enough.
 
 ---
 
@@ -67,7 +70,7 @@ at import or need optional dependencies you have not installed.
 | Call | Use it when | Behavior |
 |---|---|---|
 | `Idunn().autodiscover('my_app')` | You own the process: an application with a `main()`, an app factory, or a startup hook. | Discovers every time it is called. Call it once at startup, before the first `@Invert()` object is built. |
-| `Idunn().bootstrap('my_lib')` | You ship a library and have no startup hook to call `autodiscover` from. | `autodiscover`, guarded to run once per root. Call it from every public entry point: the first call discovers, later calls return the cached report. Thread-safe, even when called while a module is being imported. |
+| `Idunn().bootstrap('my_lib')` | You ship a library and have no startup hook to call `autodiscover` from. | `autodiscover`, guarded to run once per root: the first call discovers, later calls return the cached report. Thread-safe, even when called while a module is being imported. Usually you never write it: `@Invert(bootstrap='my_lib')` on the library's consumers makes the call for you the first time one needs a port. |
 
 ### Applications
 
@@ -124,8 +127,8 @@ if __name__ == '__main__':
 ### Libraries
 
 A library is imported, not started, and discovery at import time is a side effect nobody ordered.
-Put `bootstrap` inside the library's own entry points so wiring happens the first time anyone uses
-it, and bootstrap the narrowest package that holds your ports and adapters:
+So let the library wire itself the first time anyone uses it: give its `@Invert` consumers
+`bootstrap=`, naming the narrowest package that holds your ports and adapters:
 
 ```python
 # my_lib/ports.py
@@ -157,7 +160,7 @@ class MemoryStorageAdapter:
 
 ```python
 # my_lib/api.py
-from idunn import Idunn, Invert
+from idunn import Invert
 
 from .ports import StoragePort
 
@@ -165,7 +168,7 @@ from .ports import StoragePort
 class Engine:
   storage: StoragePort  # assigned by @Invert
 
-  @Invert()
+  @Invert(bootstrap='my_lib')  # discovers my_lib on first use; a dict lookup afterwards
   def __init__(self, *, storage: StoragePort) -> None:
     pass
 
@@ -174,15 +177,19 @@ class Engine:
 
 
 class MyLib:
-  """Public entry point; wires my_lib on first use."""
+  """Public entry point; the Engine it builds wires my_lib on the way in."""
 
   def __init__(self) -> None:
-    Idunn().bootstrap('my_lib')  # discovers once; a dict lookup afterwards
-    self._engine = Engine()  # @Invert() supplies the storage
+    self._engine = Engine()
 
   def remember(self, key: str, value: str) -> None:
     self._engine.store(key, value)
 ```
+
+`bootstrap=` runs `Idunn().bootstrap('my_lib')` only when a call leaves a port to injection, so
+`Engine(storage=fake)` in a test discovers nothing. An entry point with no ports of its own, or
+one that needs `exclude=` or `strict=`, calls `Idunn().bootstrap('my_lib', ...)` itself, first
+thing; the first call for a root wins, and every later one, `bootstrap=` included, is a cache hit.
 
 Both calls return a `ReportMap` listing the modules imported and the classes registered, which
 makes a tidy startup log line. `autodiscover` lists only what *that call* registered (a repeat run
@@ -211,7 +218,8 @@ my_app/
   adapters.py
 ```
 
-The same app lives in [`examples/classy/simple`](./examples/classy/simple/).
+The same app lives in
+[`examples/classy/simple`](https://github.com/terracoil/idunn/tree/master/examples/classy/simple).
 
 ```python
 # my_app/ports.py
@@ -280,12 +288,15 @@ relative to and Python says so. In this repo the copy sits two packages deeper, 
 root is the one line that differs from the listings above; the files also keep module docstrings,
 which the listings leave out to spare you the scrolling.
 
-More examples: [`examples/functional/simple`](./examples/functional/simple/) is the same app
-with an `@Invert()` function where the class was, and
-[`examples/classy/complex`](./examples/classy/complex/) and
-[`examples/functional/complex`](./examples/functional/complex/) run a small shop that leans on most
-of [Advanced](./docs/ADVANCED.md), once with classes and once with functions. The suite runs all
-four and checks every line they print.
+More examples:
+[`examples/functional/simple`](https://github.com/terracoil/idunn/tree/master/examples/functional/simple)
+is the same app with an `@Invert()` function where the class was, and
+[`examples/classy/complex`](https://github.com/terracoil/idunn/tree/master/examples/classy/complex)
+and
+[`examples/functional/complex`](https://github.com/terracoil/idunn/tree/master/examples/functional/complex)
+run a small shop that leans on most of
+[Advanced](https://github.com/terracoil/idunn/blob/master/docs/ADVANCED.md), once with classes and
+once with functions. The suite runs all four and checks every line they print.
 
 ---
 
@@ -305,7 +316,7 @@ four and checks every line they print.
   Idunn never patches a class to fit. One adapter per port is the normal case. `lifecycle` is
   `TRANSIENT` by default (a new instance per resolve) or `SINGLETON` (built once, shared).
   <br/><br/>Choosing between several adapters with `key=` and `envs=` is covered in
-  [Advanced](./docs/ADVANCED.md#choosing-between-adapters).
+  [Advanced](https://github.com/terracoil/idunn/blob/master/docs/ADVANCED.md#choosing-between-adapters).
 
 * ### `@Invert()`
   Wraps a consumer's `__init__`. Every parameter whose type hint is a `@Port` is resolved when the
@@ -322,15 +333,25 @@ four and checks every line they print.
   harvest('Asgard')  # basket is resolved and passed in; harvest(..., basket=fake) skips that
   ```
 
+  The forms, whose arguments combine freely:
+
+  ```python
+  @Invert()                             # infer the ports from the type hints
+  @Invert(keys={'basket': 'golden'})    # pick a keyed adapter for one parameter
+  @Invert({'basket': AppleBasketPort})  # map a parameter whose hint is not a port
+  @Invert(bootstrap='my_lib')           # a library: discover my_lib when a port is first missing
+  ```
+
   Four things to know:
   - A caller-supplied argument always wins, so `Feast('x', basket=fake)` skips injection and the
-    class stays easy to test.
+    class stays easy to test. It skips `bootstrap=` too, once every port is supplied.
   - Port parameters are keyword-only: declare them after `*`, and `@Invert()` refuses anything
     else. So `Feast('Bragi')` can only mean `host`, and a port you supply yourself goes by name.
   - Resolution is recursive: an adapter's own `@Port` constructor parameters are resolved first.
   - Calling an `@Invert()` constructor or function is the only way to start a graph. There is no
     `resolve()`. Always apply it with parentheses. Keyed selection, explicit parameter maps and
-    optional dependencies are in [Advanced](./docs/ADVANCED.md#the-invert-contract-in-full).
+    optional dependencies are in
+    [Advanced](https://github.com/terracoil/idunn/blob/master/docs/ADVANCED.md#the-invert-contract-in-full).
 
 ---
 
@@ -368,10 +389,12 @@ dependencies, or CI will notice. Idunn supports Python 3.11 and newer
 
 ## Going further
 
-- [About Idunn](./docs/ABOUT.md): the model, and the reasons behind the short list of things it
-  refuses to do.
-- [Advanced](./docs/ADVANCED.md): environments and keys, the full `@Invert` contract, discovery
-  options, `describe()`, testing with `idunn.testing`, exceptions, limitations, and maintainer
-  notes.
-- [Class catalog](./docs/classes.md): every class in the package, public or hidden.
-- [Changelog](./CHANGELOG.md): what changed in each release, and what to fix when upgrading to 2.0.
+- [About Idunn](https://github.com/terracoil/idunn/blob/master/docs/ABOUT.md): the model, and
+  the reasons behind the short list of things it refuses to do.
+- [Advanced](https://github.com/terracoil/idunn/blob/master/docs/ADVANCED.md): environments and
+  keys, the full `@Invert` contract, discovery options, `describe()`, testing with
+  `idunn.testing`, exceptions, limitations, and maintainer notes.
+- [Class catalog](https://github.com/terracoil/idunn/blob/master/docs/classes.md): every class
+  in the package, public or hidden.
+- [Changelog](https://github.com/terracoil/idunn/blob/master/CHANGELOG.md): what changed in each
+  release, and what to fix when upgrading to 2.0.

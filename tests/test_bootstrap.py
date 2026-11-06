@@ -8,10 +8,12 @@ import subprocess
 import sys
 from pathlib import Path
 from textwrap import dedent
+from typing import Any
 
 import pytest
 
-from idunn import DiscoveryError, Idunn, ReportMap
+from idunn import DiscoveryError, Idunn, Invert, ReportMap
+from idunn.internal import AutoDiscovery, BootstrapGate
 
 from _support import PackageWriter, Racer, Resolve
 
@@ -98,6 +100,22 @@ def test_bootstrap_ignores_options_on_repeat_calls(writer: PackageWriter) -> Non
   assert len(second['registered_adapters']) == 1
 
 
+def test_a_cached_root_never_reaches_the_gates_run(
+  writer: PackageWriter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  # The warm path @Invert(bootstrap=...) takes on every call: one lookup, no discover callable.
+  package = 'bootstrap_app_warm'
+  SamplePackage.install(writer, package=package)
+  first = Idunn().bootstrap(package)
+
+  def refuse(*args: object, **kwargs: object) -> ReportMap:
+    raise AssertionError('a cached root went through BootstrapGate.run')
+
+  monkeypatch.setattr(BootstrapGate, 'run', refuse)
+
+  assert Idunn().bootstrap(package, strict=False) is first
+
+
 def test_bootstrap_tracks_roots_independently(writer: PackageWriter) -> None:
   left, right = 'bootstrap_app_left', 'bootstrap_app_right'
   SamplePackage.install(writer, package=left)
@@ -123,6 +141,40 @@ def test_reset_forgets_bootstrap_so_it_rediscovers(writer: PackageWriter) -> Non
   assert second is not first
   assert second == first
   assert SamplePackage.take_apple(package) == f'golden apple from {package}'
+
+
+def test_every_door_into_discovery_registers_a_root_once_per_reset(writer: PackageWriter) -> None:
+  # Explicit bootstrap, an @Invert(bootstrap=...) consumer and repeated autodiscover calls all go
+  # through the facade's one AutoDiscovery, into the one mapper, so a root registers once per reset.
+  package = 'bootstrap_app_doors'
+  adapter = f'{package}.adapters.apple.GoldenAppleBasketAdapter'
+  SamplePackage.install(writer, package=package)
+  ports = importlib.import_module(f'{package}.ports')
+  discovery: AutoDiscovery = Idunn()._discovery
+
+  @Invert({'basket': ports.AppleBasketPort}, bootstrap=package)
+  def pick(*, basket: Any) -> str:
+    return str(basket.take_apple())
+
+  first = Idunn().bootstrap(package)
+
+  assert first['registered_adapters'] == (adapter,)
+  assert pick() == f'golden apple from {package}'
+  assert Idunn().bootstrap(package) is first
+  for _ in range(2):
+    repeat = Idunn().autodiscover(package)
+    assert (repeat['registered_ports'], repeat['registered_adapters']) == ((), ())
+  assert Idunn().bootstrap(package) is first
+
+  Idunn().reset(environment='local')
+
+  assert Idunn()._discovery is discovery
+  assert Idunn().autodiscover(package)['registered_adapters'] == (adapter,)
+  assert pick() == f'golden apple from {package}'  # bootstraps afresh, and finds nothing new
+  rebooted = Idunn().bootstrap(package)
+  assert rebooted is not first
+  assert rebooted['registered_adapters'] == ()
+  assert Idunn().bootstrap(package) is rebooted
 
 
 def test_bootstrap_is_safe_under_concurrent_first_calls(writer: PackageWriter) -> None:
