@@ -1,6 +1,6 @@
-"""Support helpers shared by the Idunn decorators."""
+"""Annotation, environment and key helpers for the decorators, the planner and the resolver."""
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from typing import Any, get_args
 
 from idunn.util import Environment
@@ -9,46 +9,42 @@ from .port_registry import PortRegistry
 
 
 class DecoratorSupport:
-  """Support logic for decorator functions."""
-
-  @staticmethod
-  def extract_port_parameters(
-    hints: Mapping[str, Any],
-  ) -> tuple[dict[str, type[Any]], set[str]]:
-    """Split a ``name -> annotation`` mapping into ``(ports, optional_names)``.
-
-    ``ports`` maps each ``@Port``-typed parameter name to its port; ``optional_names``
-    holds the subset whose annotation is ``Port | None``. The synthetic ``'return'``
-    key and every non-port annotation are skipped.
-    """
-    ports: dict[str, type[Any]] = {}
-    optional_names: set[str] = set()
-    for name, annotation in hints.items():
-      port, is_optional = DecoratorSupport.port_from_annotation(annotation)
-      if name != 'return' and port is not None:
-        ports[name] = port
-        if is_optional:
-          optional_names.add(name)
-    return (ports, optional_names)
+  """Helpers shared by the decorators and the constructor planner.
+  One copy of the annotation rule means ``@Invert`` functions and adapter constructors cannot drift
+  apart on what counts as an optional port.
+  """
 
   @staticmethod
   def normalize_envs(envs: Iterable[str] | str | None) -> frozenset[str] | None:
-    """Normalize decorator environment names."""
+    """Normalize ``envs`` to a frozenset of names, or ``None`` for "everywhere".
+    Done at decoration, so the names already compare equal to what ``Environment.current``
+    produces. An empty collection yields an empty set: an adapter that is active nowhere, which
+    is legal if not especially useful.
+    """
     if envs is None:
       return None
     raw_vals: Iterable[str] = (envs,) if isinstance(envs, str) else envs
     return frozenset(Environment.normalize(item) for item in raw_vals)
 
   @staticmethod
+  def plain_key(key: str) -> str:
+    """Return ``key`` as a plain ``str``, so a ``StrEnum`` member is kept and printed as its value.
+    ``str.__str__`` rather than ``str()``: a ``(str, Enum)`` member's ``__str__`` answers
+    ``'Grade.GOLD'``, which would quietly stop it matching the ``'gold'`` it equals. Every key, from
+    ``@Adapter``, ``@Invert`` or ``Harness.override``, goes through here after its type check, and
+    so does ``@Invert(bootstrap=...)``'s root, which discovery would otherwise spell the same way.
+    """
+    return str.__str__(key)
+
+  @staticmethod
   def port_from_annotation(annotation: Any) -> tuple[type[Any] | None, bool]:
     """Resolve a constructor annotation to ``(port, optional)``.
-
-    A bare ``@Port`` annotation yields ``(port, False)``; an ``Optional`` port
-    (``Port | None``) yields ``(port, True)`` — the ``| None`` is the signal that a
-    missing adapter is tolerable. Anything else yields ``(None, False)``.
+    A bare ``@Port`` annotation yields ``(port, False)``; ``Port | None`` yields ``(port, True)``,
+    the ``| None`` being the signal that a missing adapter is survivable. Anything else yields
+    ``(None, False)``.
     """
-    args = get_args(annotation)
-    non_none = tuple(arg for arg in args if arg is not type(None))
+    args: tuple[Any, ...] = get_args(annotation)
+    non_none: tuple[Any, ...] = tuple(arg for arg in args if arg is not type(None))
     result: tuple[type[Any] | None, bool]
     if PortRegistry.is_port(annotation):
       result = (annotation, False)

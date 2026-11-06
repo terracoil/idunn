@@ -1,4 +1,4 @@
-"""Adapters for ``my_app``, kept in ``adapters`` by convention beside ``ports``."""
+"""Adapters, kept beside ``ports`` for the humans; Idunn would find them anywhere under the root."""
 
 from idunn import Adapter, LifecycleEnum
 
@@ -7,7 +7,7 @@ from .ports import AppleBasketPort
 
 @Adapter(AppleBasketPort, lifecycle=LifecycleEnum.SINGLETON)
 class GoldenAppleBasketAdapter(AppleBasketPort):
-  """The one basket ``AppleBasketPort`` resolves to, built once and reused."""
+  """The one basket ``AppleBasketPort`` resolves to, built once and shared by everyone."""
 
   def take_apple(self) -> str:
     """Hand out a golden apple."""

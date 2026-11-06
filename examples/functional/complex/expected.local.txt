@@ -1,0 +1,37 @@
+shop wired: 5 ports, 7 adapters
+Gjallarhorn blares: Idunn's stall is open
+Bragi owes 6 marks, scratched on a rune stick; 4 left
+  (the skald sings of how Bragi bought 2 golden apples)
+Freyja owes 6 marks, scratched on a rune stick; 2 left
+  (the skald sings of how Freyja bought 2 golden apples)
+Huginn whispers: 2 golden apples left
+Thor drinks the mead of poetry and speaks only in verse
+Loki drinks the mead of poetry and speaks only in verse
+
+Environment: local
+
+examples.functional.complex.mead.ports.BrewPort
+  selected: examples.functional.complex.mead.brewery.KvasirBrewery
+  - examples.functional.complex.mead.brewery.KvasirBrewery key=None envs=*
+
+examples.functional.complex.shop.ports.CheckoutPort
+  selected: examples.functional.complex.shop.till.Till
+  - examples.functional.complex.shop.till.Till key=None envs=*
+
+examples.functional.complex.shop.ports.HeraldPort
+  selected: <none>
+  - examples.functional.complex.shop.gjallarhorn_herald.GjallarhornHerald key='horn' envs=*
+  - examples.functional.complex.shop.raven_herald.RavenHerald key='raven' envs=*
+
+examples.functional.complex.shop.ports.PaymentPort
+  selected: examples.functional.complex.shop.rune_tally_payment.RuneTallyPayment
+  - examples.functional.complex.shop.gold_coffer_payment.GoldCofferPayment key=None envs=prod
+  - examples.functional.complex.shop.rune_tally_payment.RuneTallyPayment key=None envs=local
+
+examples.functional.complex.shop.ports.SagaPort
+  selected: examples.functional.complex.shop.skald_saga.SkaldSaga
+  - examples.functional.complex.shop.skald_saga.SkaldSaga key=None envs=local
+
+examples.functional.complex.shop.ports.StoreroomPort
+  selected: examples.functional.complex.shop.storeroom.Storeroom
+  - examples.functional.complex.shop.storeroom.Storeroom key=None envs=* singleton

@@ -1,18 +1,28 @@
-from typing import Protocol
+"""Engine-level resolution through ``Wiring``: selection, lifecycles, optional ports, cycles, plans.
+Adapter constructors decorated with ``@Invert`` get their own keys and map honoured here, while
+undecorated ones resolve unkeyed, and each adapter's plan is worked out once until ``clear()``.
+"""
+
+import importlib
+from types import ModuleType
+from typing import Protocol, cast
 
 import pytest
+
 from idunn import (
   Adapter,
   AdapterNotFoundError,
   InjectionCycleError,
   InvalidAdapterError,
   InvalidPortError,
+  Invert,
   LifecycleEnum,
   MissingTypeHintError,
   Port,
 )
+from idunn.testing import Harness
 
-from _support import Wiring
+from _support import PackageWriter, Wiring
 
 
 def test_constructor_time_injection() -> None:
@@ -237,9 +247,14 @@ def test_duplicate_key_with_overlapping_environments_raises() -> None:
     pass
 
   table.register_adapter(StripePaymentAdapter)
+  local = f'{__name__}.test_duplicate_key_with_overlapping_environments_raises.<locals>'
 
-  with pytest.raises(InvalidAdapterError):
+  # Both culprits by full name: two Stripe adapters in two modules would otherwise look identical.
+  with pytest.raises(InvalidAdapterError) as collision:
     table.register_adapter(BraintreePaymentAdapter)
+
+  assert f'{local}.PaymentPort' in str(collision.value)
+  assert f'{local}.StripePaymentAdapter and {local}.BraintreePaymentAdapter' in str(collision.value)
 
 
 def test_duplicate_unkeyed_adapters_in_overlapping_envs_raises() -> None:
@@ -249,7 +264,7 @@ def test_duplicate_unkeyed_adapters_in_overlapping_envs_raises() -> None:
   class PaymentPort(Protocol):
     pass
 
-  # Two unkeyed adapters (both key=None) active in 'prod' collide via key-overlap.
+  # Two unkeyed adapters both active in 'prod': same (port, key=None), overlapping envs.
   @Adapter(PaymentPort, envs={'prod'})
   class StripePaymentAdapter(PaymentPort):
     pass
@@ -260,8 +275,49 @@ def test_duplicate_unkeyed_adapters_in_overlapping_envs_raises() -> None:
 
   table.register_adapter(StripePaymentAdapter)
 
-  with pytest.raises(InvalidAdapterError):
+  with pytest.raises(InvalidAdapterError, match=r'StripePaymentAdapter and .*BraintreePayment'):
     table.register_adapter(BraintreePaymentAdapter)
+
+
+@pytest.mark.parametrize('order', ['agnostic-first', 'scoped-first'])
+def test_an_env_agnostic_adapter_collides_with_a_scoped_one(order: str) -> None:
+  # Agnostic means active everywhere, prod included: letting both in would make prod a guess.
+  @Port
+  class PaymentPort(Protocol):
+    pass
+
+  @Adapter(PaymentPort)
+  class AnywherePayment(PaymentPort):
+    pass
+
+  @Adapter(PaymentPort, envs={'prod'})
+  class ProdPayment(PaymentPort):
+    pass
+
+  pair = (
+    (AnywherePayment, ProdPayment) if order == 'agnostic-first' else (ProdPayment, AnywherePayment)
+  )
+
+  with pytest.raises(InvalidAdapterError, match='overlapping environments'):
+    Wiring.of(*pair)
+
+
+def test_a_missing_adapter_names_its_port_key_and_environment() -> None:
+  table = Wiring(environment='prod')
+
+  @Port
+  class PaymentPort(Protocol):
+    pass
+
+  local = f'{__name__}.test_a_missing_adapter_names_its_port_key_and_environment.<locals>'
+
+  with pytest.raises(AdapterNotFoundError) as unkeyed:
+    table.resolve(PaymentPort)
+  with pytest.raises(AdapterNotFoundError) as keyed:
+    table.resolve(PaymentPort, key='nope')
+
+  assert str(unkeyed.value).endswith(f"port {local}.PaymentPort in 'prod'.")
+  assert str(keyed.value).endswith(f"port {local}.PaymentPort with key 'nope' in 'prod'.")
 
 
 def test_invalid_adapter_does_not_satisfy_port() -> None:
@@ -276,9 +332,14 @@ def test_invalid_adapter_does_not_satisfy_port() -> None:
     pass
 
   table.register_adapter(RockBasketAdapter)
+  local = f'{__name__}.test_invalid_adapter_does_not_satisfy_port.<locals>'
 
-  with pytest.raises(InvalidAdapterError):
+  with pytest.raises(InvalidAdapterError) as mismatch:
     table.resolve(AppleBasketPort)
+
+  assert f'{local}.RockBasketAdapter does not satisfy port {local}.AppleBasketPort' in str(
+    mismatch.value
+  )
 
 
 def test_missing_explicit_key_raises() -> None:
@@ -304,8 +365,12 @@ def test_non_port_resolution_raises() -> None:
   class NotAPort:
     pass
 
-  with pytest.raises(InvalidPortError):
+  with pytest.raises(InvalidPortError) as refused:
     table.resolve(NotAPort)
+
+  assert str(refused.value).endswith(
+    f'{__name__}.test_non_port_resolution_raises.<locals>.NotAPort'
+  )
 
 
 def test_constructor_parameter_without_type_hint_raises() -> None:
@@ -322,8 +387,33 @@ def test_constructor_parameter_without_type_hint_raises() -> None:
 
   table.register_adapter(ServiceAdapter)
 
-  with pytest.raises(MissingTypeHintError):
+  with pytest.raises(MissingTypeHintError) as missing:
     table.resolve(ServicePort)
+
+  local = f'{__name__}.test_constructor_parameter_without_type_hint_raises.<locals>'
+  assert str(missing.value).endswith(f'{local}.ServiceAdapter.dependency')
+
+
+def test_constructor_parameter_typed_as_a_plain_value_raises() -> None:
+  table = Wiring()
+
+  @Port
+  class ServicePort(Protocol):
+    pass
+
+  @Adapter(ServicePort)
+  class ServiceAdapter(ServicePort):
+    def __init__(self, label: str) -> None:
+      self.label = label
+
+  table.register_adapter(ServiceAdapter)
+
+  # Idunn injects ports, never values; a str with no default has nobody to supply it.
+  with pytest.raises(MissingTypeHintError) as refused:
+    table.resolve(ServicePort)
+
+  local = f'{__name__}.test_constructor_parameter_typed_as_a_plain_value_raises.<locals>'
+  assert f'{local}.ServiceAdapter.label: builtins.str is not an @Port' in str(refused.value)
 
 
 def test_constructor_cycle_raises() -> None:
@@ -350,8 +440,13 @@ def test_constructor_cycle_raises() -> None:
   table.register_adapter(FirstAdapter)
   table.register_adapter(SecondAdapter)
 
-  with pytest.raises(InjectionCycleError):
+  with pytest.raises(InjectionCycleError) as cycle:
     table.resolve(FirstPort)
+
+  local = f'{__name__}.test_constructor_cycle_raises.<locals>'
+  assert str(cycle.value).endswith(
+    f'{local}.FirstAdapter -> {local}.SecondAdapter -> {local}.FirstAdapter'
+  )
 
 
 def test_constructor_optional_dependency_falls_back_when_absent() -> None:
@@ -376,6 +471,33 @@ def test_constructor_optional_dependency_falls_back_when_absent() -> None:
   table.register_adapter(ServiceAdapter)  # no SidecarPort adapter is registered
 
   assert table.resolve(ServicePort).run() == 'no-sidecar'
+
+
+def test_an_adapter_port_with_a_non_none_default_gets_that_default_when_absent() -> None:
+  # Any default makes a port optional, not only None: the default is what the adapter asked for.
+  @Port
+  class SidecarPort(Protocol):
+    def ping(self) -> str: ...
+
+  class SpareSidecar:
+    def ping(self) -> str:
+      return 'spare'
+
+  spare = SpareSidecar()
+
+  @Port
+  class ServicePort(Protocol):
+    def run(self) -> str: ...
+
+  @Adapter(ServicePort)
+  class ServiceAdapter(ServicePort):
+    def __init__(self, sidecar: SidecarPort = spare) -> None:
+      self.sidecar: SidecarPort = sidecar
+
+    def run(self) -> str:
+      return self.sidecar.ping()
+
+  assert Wiring.of(ServiceAdapter).resolve(ServicePort).sidecar is spare
 
 
 def test_constructor_optional_dependency_injects_when_present() -> None:
@@ -438,7 +560,7 @@ def test_adapter_subclassing_its_port_is_not_itself_a_port() -> None:
     def hello(self) -> str:
       return 'hi'
 
-  with pytest.raises(InvalidPortError):
+  with pytest.raises(InvalidPortError, match=r'not marked with @Port: .*\.GreeterAdapter$'):
     Adapter(GreeterAdapter)
 
 
@@ -452,5 +574,325 @@ def test_resolving_an_undecorated_protocol_subclass_of_a_port_is_rejected() -> N
   class LouderGreeterPort(GreeterPort, Protocol):
     def shout(self) -> str: ...
 
-  with pytest.raises(InvalidPortError):
+  with pytest.raises(InvalidPortError, match=r'not marked with @Port: .*\.LouderGreeterPort$'):
     table.resolve(LouderGreeterPort)
+
+
+def test_an_optional_adapter_parameter_without_a_default_gets_none_when_absent() -> None:
+  table = Wiring()
+
+  @Port
+  class SidecarPort(Protocol):
+    def ping(self) -> str: ...
+
+  @Port
+  class ServicePort(Protocol):
+    def run(self) -> str: ...
+
+  @Adapter(ServicePort)
+  class ServiceAdapter(ServicePort):
+    def __init__(self, sidecar: SidecarPort | None) -> None:
+      self.sidecar = sidecar
+
+    def run(self) -> str:
+      return 'run'
+
+  table.register_adapter(ServiceAdapter)
+
+  assert table.resolve(ServicePort).sidecar is None
+
+
+@Port
+class NotifierPort(Protocol):
+  def send(self) -> str: ...
+
+
+@Port
+class ReminderPort(Protocol):
+  def remind(self) -> str: ...
+
+
+# One port, an unkeyed email adapter and a keyed sms one: the silent-wrong-injection setup.
+@Adapter(NotifierPort)
+class EmailNotifier:
+  def send(self) -> str:
+    return 'email'
+
+
+@Adapter(NotifierPort, key='sms')
+class SmsNotifier:
+  def send(self) -> str:
+    return 'sms'
+
+
+def test_an_adapter_constructor_keyed_with_invert_gets_its_keyed_dependency() -> None:
+  @Adapter(ReminderPort)
+  class Reminder:
+    notifier: NotifierPort
+
+    @Invert(keys={'notifier': 'sms'})
+    def __init__(self, *, notifier: NotifierPort) -> None:
+      pass
+
+    def remind(self) -> str:
+      return self.notifier.send()
+
+  # 1.x handed this constructor the unkeyed email adapter: wrong, and silent about it.
+  table = Wiring.of(EmailNotifier, SmsNotifier, Reminder)
+
+  assert table.resolve(ReminderPort).remind() == 'sms'
+
+
+def test_an_adapter_constructor_with_an_explicit_map_gets_its_dependency() -> None:
+  @Adapter(ReminderPort)
+  class Reminder:
+    @Invert({'notifier': NotifierPort})
+    def __init__(self, *, notifier: object) -> None:
+      self._notifier = notifier
+
+    def remind(self) -> str:
+      return cast(NotifierPort, self._notifier).send()
+
+  table = Wiring.of(EmailNotifier, Reminder)
+
+  assert table.resolve(ReminderPort).remind() == 'email'
+
+
+def test_plain_invert_and_undecorated_adapter_constructors_resolve_unkeyed() -> None:
+  @Adapter(ReminderPort)
+  class PlainReminder:
+    @Invert()
+    def __init__(self, *, notifier: NotifierPort) -> None:
+      self._notifier = notifier
+
+    def remind(self) -> str:
+      return self._notifier.send()
+
+  @Adapter(ReminderPort, key='bare')
+  class BareReminder:
+    def __init__(self, notifier: NotifierPort) -> None:
+      self._notifier = notifier
+
+    def remind(self) -> str:
+      return self._notifier.send()
+
+  keyed_only = Wiring.of(SmsNotifier, PlainReminder, BareReminder)
+  both = Wiring.of(SmsNotifier, EmailNotifier, PlainReminder, BareReminder)
+
+  # A keyed adapter never sneaks into a constructor that did not ask for it by name.
+  with pytest.raises(AdapterNotFoundError):
+    keyed_only.resolve(ReminderPort)
+  with pytest.raises(AdapterNotFoundError):
+    keyed_only.resolve(ReminderPort, key='bare')
+  assert both.resolve(ReminderPort).remind() == 'email'
+  assert both.resolve(ReminderPort, key='bare').remind() == 'email'
+
+
+def test_a_cycle_through_a_keyed_dependency_is_still_a_cycle() -> None:
+  @Port
+  class EggPort(Protocol):
+    pass
+
+  @Port
+  class HenPort(Protocol):
+    pass
+
+  @Adapter(EggPort, key='first')
+  class Egg:
+    def __init__(self, hen: HenPort) -> None:
+      self.hen = hen
+
+  @Adapter(HenPort)
+  class Hen:
+    @Invert(keys={'egg': 'first'})
+    def __init__(self, *, egg: EggPort) -> None:
+      pass
+
+  table = Wiring.of(Egg, Hen)
+
+  with pytest.raises(InjectionCycleError) as cycle:
+    table.resolve(HenPort)
+
+  local = f'{__name__}.test_a_cycle_through_a_keyed_dependency_is_still_a_cycle.<locals>'
+  assert str(cycle.value).endswith(f'{local}.Hen -> {local}.Egg -> {local}.Hen')
+
+
+def test_an_adapter_plan_is_made_once_and_forgotten_on_clear() -> None:
+  table = Wiring.of(EmailNotifier)
+
+  table.resolve(NotifierPort)
+  plan = table.resolver._plans[EmailNotifier]
+  table.resolve(NotifierPort)
+
+  assert table.resolver._plans[EmailNotifier] is plan
+  table.resolver.clear()
+  assert table.resolver._plans == {}
+
+
+def test_a_positional_only_port_on_an_adapter_raises_type_error() -> None:
+  @Adapter(ReminderPort)
+  class Reminder:
+    def __init__(self, notifier: NotifierPort, /) -> None:
+      self._notifier = notifier
+
+    def remind(self) -> str:
+      return self._notifier.send()
+
+  table = Wiring.of(EmailNotifier, Reminder)
+
+  with pytest.raises(TypeError, match=r'Reminder\.notifier is a positional-only port'):
+    table.resolve(ReminderPort)
+
+
+class Unresolved:
+  """A generated module whose adapters' hints name what no module namespace holds, or not yet."""
+
+  # `local_feast` hides its port inside a function, where `from __future__ import annotations`
+  # leaves a string nothing can resolve; LaterFeast waits for a LaterPort the test hands in.
+  SOURCE = """
+    from __future__ import annotations
+
+    from typing import Protocol
+
+    from idunn import Adapter, Invert, LifecycleEnum, Port
+
+    BUILT: list[str] = []
+
+    @Port
+    class BasketPort(Protocol):
+      def take(self) -> str: ...
+
+    @Port
+    class FeastPort(Protocol):
+      def serve(self) -> str: ...
+
+    @Port
+    class CountedPort(Protocol):
+      pass
+
+    @Port
+    class TopPort(Protocol):
+      pass
+
+    @Adapter(BasketPort)
+    class GoldenBasket:
+      def take(self) -> str:
+        return 'golden'
+
+    @Adapter(FeastPort)
+    class LaterFeast:
+      def __init__(self, *, basket: LaterPort) -> None:
+        self.basket = basket
+
+      def serve(self) -> str:
+        return self.basket.take()
+
+    def local_feast() -> type:
+      @Port
+      class LocalBasketPort(Protocol):
+        def take(self) -> str: ...
+
+      @Adapter(FeastPort)
+      class LocalFeast:
+        def __init__(self, *, basket: LocalBasketPort) -> None:
+          self.basket = basket
+
+        def serve(self) -> str:
+          return self.basket.take()
+
+      return LocalFeast
+
+    @Adapter(CountedPort)
+    class Counted:
+      def __init__(self) -> None:
+        BUILT.append('counted')
+
+    @Adapter(TopPort, lifecycle=LifecycleEnum.SINGLETON)
+    class Top:
+      def __init__(self, *, counted: CountedPort, feast: FeastPort) -> None:
+        pass
+
+    class Hints:
+      @staticmethod
+      def gave_up() -> type:
+        raise NameError('the hint factory gave up')
+
+    @Adapter(FeastPort)
+    class Fussy:
+      def __init__(self, *, basket: Hints.gave_up()) -> None:
+        pass
+
+      def serve(self) -> str:
+        return 'never'
+
+    @Invert()
+    def serve(*, feast: FeastPort) -> str:
+      return feast.serve()
+  """
+
+  @staticmethod
+  def load(writer: PackageWriter, name: str) -> ModuleType:
+    """Write the source as top-level module ``name`` (one per test: ``sys.modules`` lingers)."""
+    writer.module(name, Unresolved.SOURCE)
+    return importlib.import_module(name)
+
+
+def test_an_unresolvable_adapter_hint_raises_missing_type_hint_error_naming_both(
+  writer: PackageWriter,
+) -> None:
+  module = Unresolved.load(writer, 'unresolved_local')
+
+  with pytest.raises(MissingTypeHintError) as missing:
+    Wiring.of(module.local_feast()).resolve(module.FeastPort)
+
+  assert f'{module.__name__}.local_feast.<locals>.LocalFeast' in str(missing.value)
+  assert 'raised "name \'LocalBasketPort\' is not defined"' in str(missing.value)
+  assert isinstance(missing.value.__cause__, NameError)
+
+
+def test_a_name_error_raised_inside_a_hint_is_quoted_not_mistaken_for_a_missing_name(
+  writer: PackageWriter,
+) -> None:
+  # A hint that calls something can raise a NameError naming nothing; the message must not invent.
+  module = Unresolved.load(writer, 'unresolved_fussy')
+
+  with pytest.raises(MissingTypeHintError) as missing:
+    Wiring.of(module.Fussy).resolve(module.FeastPort)
+
+  assert 'Fussy: evaluating its type hints raised "the hint factory gave up"' in str(missing.value)
+  assert 'None' not in str(missing.value)
+  assert isinstance(missing.value.__cause__, NameError)
+
+
+def test_an_unresolvable_adapter_hint_is_not_cached_and_resolves_once_the_name_exists(
+  writer: PackageWriter,
+) -> None:
+  module = Unresolved.load(writer, 'unresolved_later')
+  table = Wiring.of(module.GoldenBasket, module.LaterFeast)
+
+  with pytest.raises(MissingTypeHintError, match="name 'LaterPort' is not defined"):
+    table.resolve(module.FeastPort)
+  vars(module)['LaterPort'] = module.BasketPort
+
+  assert table.resolve(module.FeastPort).serve() == 'golden'
+
+
+def test_the_singleton_cycle_walk_raises_it_before_anything_is_built(
+  writer: PackageWriter,
+) -> None:
+  module = Unresolved.load(writer, 'unresolved_walk')
+
+  # Counted comes first in Top's plan, so only the walk explains it never being built.
+  with pytest.raises(MissingTypeHintError, match="name 'LocalBasketPort' is not defined"):
+    Wiring.of(module.Counted, module.local_feast(), module.Top).resolve(module.TopPort)
+  assert module.BUILT == []
+
+
+def test_a_harness_installed_adapter_raises_it_through_an_invert_consumer(
+  writer: PackageWriter,
+) -> None:
+  module = Unresolved.load(writer, 'unresolved_harness')
+
+  with Harness.install(module.local_feast()), pytest.raises(MissingTypeHintError) as missing:
+    module.serve()
+  assert 'LocalFeast: evaluating its type hints raised' in str(missing.value)
